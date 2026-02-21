@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Pug Dash: Snout's Endless Adventure</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@700;800;900&display=swap');
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background:#1a0800;
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; font-family:'Nunito',sans-serif; overflow:hidden;
+  }
+
+  #gameWrapper {
+    position:relative; width:480px; height:700px;
+    border-radius:24px; overflow:hidden;
+    box-shadow:0 0 60px rgba(255,107,53,.5),0 0 120px rgba(255,107,53,.2);
+    border:3px solid rgba(255,200,100,.3);
+  }
+
+  canvas { display:block; width:100%; height:100%; }
+
+  .screen {
+    position:absolute; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    transition:opacity .35s,transform .35s;
+  }
+  .screen.hidden { opacity:0; pointer-events:none; transform:scale(.95); }
+
+  #startScreen { background:linear-gradient(180deg,#FF9EBC 0%,#FFB347 45%,#FF6B35 100%); }
+
+  .stars-bg { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+  .star { position:absolute; background:white; border-radius:50%; animation:twinkle 2s ease-in-out infinite; opacity:0; }
+  @keyframes twinkle { 0%,100%{opacity:0;transform:scale(.5)} 50%{opacity:1;transform:scale(1)} }
+
+  .game-title {
+    font-family:'Fredoka One',cursive; font-size:54px; color:white; line-height:1;
+    text-shadow:4px 4px 0 #7a2800,-2px -2px 0 #7a2800,2px -2px 0 #7a2800,-2px 2px 0 #7a2800;
+    text-align:center; margin-bottom:4px;
+  }
+  .game-subtitle {
+    font-family:'Fredoka One',cursive; font-size:17px; color:#FFF0B0;
+    text-shadow:2px 2px 0 #7a2800; margin-bottom:22px;
+  }
+  .pug-mascot {
+    font-size:96px; animation:bounce 1s ease-in-out infinite alternate;
+    filter:drop-shadow(0 8px 16px rgba(0,0,0,.35)); margin-bottom:16px;
+  }
+  @keyframes bounce { from{transform:translateY(0) rotate(-5deg)} to{transform:translateY(-14px) rotate(5deg)} }
+
+  .btn {
+    font-family:'Fredoka One',cursive; font-size:22px;
+    padding:15px 46px; border:none; border-radius:50px;
+    cursor:pointer; letter-spacing:1px; transition:transform .1s,box-shadow .1s;
+  }
+  .btn:active { transform:scale(.95) !important; }
+  .btn-play {
+    background:linear-gradient(135deg,#FFD700,#FF8C00); color:white;
+    text-shadow:2px 2px 0 rgba(0,0,0,.3);
+    box-shadow:0 6px 0 #B8860B,0 8px 20px rgba(0,0,0,.3); margin-bottom:14px;
+  }
+  .btn-play:hover { transform:translateY(-2px); box-shadow:0 8px 0 #B8860B,0 10px 24px rgba(0,0,0,.3); }
+  .btn-retry {
+    background:linear-gradient(135deg,#FF6B35,#FF3A00); color:white;
+    text-shadow:2px 2px 0 rgba(0,0,0,.3);
+    box-shadow:0 6px 0 #8B1A00,0 8px 20px rgba(0,0,0,.3); margin-bottom:12px;
+  }
+
+  .best-score {
+    font-family:'Fredoka One',cursive; font-size:19px; color:white;
+    text-shadow:2px 2px 0 rgba(0,0,0,.4); margin-top:12px;
+    background:rgba(0,0,0,.2); padding:9px 22px; border-radius:28px;
+  }
+  .controls-card {
+    margin-top:16px; background:rgba(0,0,0,.25); border-radius:14px;
+    padding:12px 20px; text-align:center;
+    color:rgba(255,255,255,.85); font-size:13px; font-weight:700; line-height:1.8;
+  }
+
+  #hud {
+    position:absolute; top:14px; left:0; right:0;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:0 16px; pointer-events:none;
+  }
+  .hud-box {
+    background:rgba(0,0,0,.42); backdrop-filter:blur(8px);
+    border-radius:14px; padding:7px 14px; border:2px solid rgba(255,255,255,.18);
+  }
+  .hud-label { font-size:9px; font-weight:900; color:rgba(255,255,255,.65); letter-spacing:1.2px; text-transform:uppercase; }
+  .hud-value { font-family:'Fredoka One',cursive; font-size:21px; color:white; line-height:1.1; }
+  .hud-value.gold { color:#FFD700; }
+  .hud-value.pink { color:#FF9EBC; }
+
+  #powerupDisplay {
+    position:absolute; top:84px; left:50%; transform:translateX(-50%);
+    display:flex; gap:7px; pointer-events:none;
+  }
+  .powerup-icon {
+    background:rgba(0,0,0,.5); border:2px solid rgba(255,255,255,.3);
+    border-radius:11px; padding:5px 11px; font-size:17px;
+    animation:ppulse 1s ease-in-out infinite;
+  }
+  @keyframes ppulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
+
+  #stageBanner {
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%,-50%) scale(.5);
+    background:rgba(0,0,0,.72); border:3px solid #FFD700;
+    border-radius:18px; padding:14px 28px; text-align:center;
+    opacity:0; transition:all .3s; pointer-events:none; z-index:10;
+  }
+  #stageBanner.show { opacity:1; transform:translate(-50%,-50%) scale(1); }
+  #stageBanner .stage-name { font-family:'Fredoka One',cursive; font-size:26px; color:#FFD700; }
+  #stageBanner .stage-desc { font-size:13px; color:rgba(255,255,255,.82); }
+
+  #toast {
+    position:absolute; top:104px; left:50%;
+    transform:translateX(-50%) translateY(-8px);
+    background:rgba(0,0,0,.68); border-radius:18px; padding:7px 18px;
+    font-family:'Fredoka One',cursive; font-size:17px; color:white;
+    pointer-events:none; opacity:0; transition:opacity .25s,transform .25s;
+    white-space:nowrap; z-index:20;
+  }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  #gameOverScreen { background:linear-gradient(180deg,#2C1810 0%,#8B3A00 100%); }
+  .game-over-title {
+    font-family:'Fredoka One',cursive; font-size:46px; color:#FF6B35;
+    text-shadow:3px 3px 0 rgba(0,0,0,.5); margin-bottom:8px;
+  }
+  .score-display {
+    background:rgba(255,255,255,.1); border:3px solid rgba(255,200,100,.4);
+    border-radius:18px; padding:18px 38px; text-align:center;
+    margin-bottom:20px; width:290px;
+  }
+  .score-big { font-family:'Fredoka One',cursive; font-size:54px; color:#FFD700; text-shadow:3px 3px 0 rgba(0,0,0,.4); }
+  .score-label-sm { font-size:12px; font-weight:900; color:rgba(255,255,255,.6); letter-spacing:2px; text-transform:uppercase; }
+  .new-best { font-family:'Fredoka One',cursive; font-size:19px; color:#FF9EBC; animation:pulse .5s ease-in-out infinite alternate; }
+  @keyframes pulse { from{transform:scale(1)} to{transform:scale(1.05)} }
+  .distance-stat { font-family:'Fredoka One',cursive; font-size:20px; color:rgba(255,255,255,.8); margin-bottom:20px; }
+
+  .controls-hint {
+    position:absolute; bottom:18px; left:50%; transform:translateX(-50%);
+    display:flex; gap:10px; pointer-events:none;
+  }
+  .ctrl {
+    background:rgba(0,0,0,.4); border:2px solid rgba(255,255,255,.28);
+    border-radius:10px; padding:5px 12px;
+    font-size:11px; font-weight:900; color:rgba(255,255,255,.82); letter-spacing:.5px;
+  }
+</style>
+</head>
+<body>
+<div id="gameWrapper">
+  <canvas id="gameCanvas" width="480" height="700"></canvas>
+
+  <div id="startScreen" class="screen">
+    <div class="stars-bg" id="starsBg"></div>
+    <div class="pug-mascot">🐾</div>
+    <div class="game-title">PUG DASH</div>
+    <div class="game-subtitle">✨ Snout's Endless Adventure ✨</div>
+    <button class="btn btn-play" id="playBtn">▶ PLAY NOW</button>
+    <div class="best-score">🏆 Best: <span id="bestDisplay">0</span></div>
+    <div class="controls-card">
+      SPACE / ↑ — Jump &nbsp;|&nbsp; ↑↑ — Double Jump<br>
+      ↓ — Slide/Roll &nbsp;|&nbsp; Touch &amp; Swipe supported
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-box">
+      <div class="hud-label">Score</div>
+      <div class="hud-value gold" id="scoreDisplay">0</div>
+    </div>
+    <div class="hud-box" style="text-align:center">
+      <div class="hud-label">Distance</div>
+      <div class="hud-value" id="distDisplay">0m</div>
+    </div>
+    <div class="hud-box" style="text-align:right">
+      <div class="hud-label">Best</div>
+      <div class="hud-value pink" id="bestHud">0</div>
+    </div>
+  </div>
+
+  <div id="powerupDisplay"></div>
+
+  <div id="stageBanner">
+    <div class="stage-name" id="stageName">🐾 PUPPY MODE</div>
+    <div class="stage-desc" id="stageDesc">Wag that tail!</div>
+  </div>
+
+  <div id="toast"></div>
+
+  <div id="gameOverScreen" class="screen hidden">
+    <div style="font-size:68px;margin-bottom:8px" id="gameOverEmoji">💥</div>
+    <div class="game-over-title">WIPEOUT!</div>
+    <div class="score-display">
+      <div class="score-label-sm">Final Score</div>
+      <div class="score-big" id="finalScore">0</div>
+      <div id="newBestBadge" class="new-best hidden">🏆 NEW BEST!</div>
+    </div>
+    <div class="distance-stat" id="finalDist">📏 0m run</div>
+    <button class="btn btn-retry" id="retryBtn">🔁 TRY AGAIN</button>
+    <button class="btn btn-play"
+      style="background:linear-gradient(135deg,#9B59B6,#6C3483);box-shadow:0 6px 0 #4A235A;font-size:16px;padding:11px 28px"
+      id="menuBtn">🏠 MENU</button>
+  </div>
+
+  <div class="controls-hint" id="controlsHint" style="display:none">
+    <div class="ctrl">↑ JUMP</div>
+    <div class="ctrl">↓ SLIDE</div>
+  </div>
+</div>
+
+<script>
+// ── POLYFILL: roundRect ───────────────────────────────────────────────────────
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r) {
+    r = Math.min(r, Math.abs(w)/2, Math.abs(h)/2);
+    this.moveTo(x+r,y);
+    this.lineTo(x+w-r,y); this.quadraticCurveTo(x+w,y,x+w,y+r);
+    this.lineTo(x+w,y+h-r); this.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    this.lineTo(x+r,y+h); this.quadraticCurveTo(x,y+h,x,y+h-r);
+    this.lineTo(x,y+r); this.quadraticCurveTo(x,y,x+r,y);
+    this.closePath();
+  };
+}
+
+// ── CANVAS SETUP ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+const W = 480, H = 700;
+const GROUND_Y   = 555;   // y coordinate of the ground surface
+const PUG_GROUND = GROUND_Y; // pug feet rest here
+const PUG_X      = 85;   // pug is fixed on the left for maximum reaction time
+
+// ── GAME STATE ────────────────────────────────────────────────────────────────
+let gameState  = 'start';
+let score      = 0;
+let bestScore  = parseInt(localStorage.getItem('pugBest') || '0');
+let distance   = 0;
+let speed      = 2.0;
+let frame      = 0;
+let multiplier = 1;
+
+const pug = {
+  x: PUG_X, y: PUG_GROUND, vy: 0,
+  onGround: true, jumpCount: 0,
+  sliding: false, slideTimer: 0,
+  invincible: false, invTimer: 0,
+  shield: false,
+};
+
+let obstacles = [], collectibles = [], particles = [], bgClouds = [], powerups = [];
+let obstCooldown = 0;
+let currentStage = 0, stageBannerTimer = 0, toastTimer = 0;
+
+// ── STAGE CONFIG ──────────────────────────────────────────────────────────────
+const STAGES = [
+  { name:'🐾 PUPPY MODE',    desc:'Wag that tail!',         minDist:0,    bgTop:'#87CEEB', bgBot:'#B8F0A0', gndColor:'#7EC850', gndDark:'#4E8C30', spawnMin:130, spawnMax:200 },
+  { name:'🌳 PARK PLAYTIME', desc:'Watch for the benches!', minDist:500,  bgTop:'#6EC8F8', bgBot:'#A8F0C0', gndColor:'#68B848', gndDark:'#487830', spawnMin:110, spawnMax:175 },
+  { name:'🌻 BACKYARD BLITZ',desc:'Bees and sprinklers!',   minDist:2000, bgTop:'#F8D070', bgBot:'#FCA080', gndColor:'#78A860', gndDark:'#507840', spawnMin:95,  spawnMax:155 },
+  { name:'🏙️ CITY CHASE',    desc:'Dodge the pigeons!',     minDist:5000, bgTop:'#B8C8D8', bgBot:'#D8E4F0', gndColor:'#8898A8', gndDark:'#586878', spawnMin:80,  spawnMax:130 },
+  { name:'🌈 DREAM RUN',     desc:'Pure chaos—good luck!',  minDist:9000, bgTop:'#CCB8F8', bgBot:'#F8C0E0', gndColor:'#B898F0', gndDark:'#7858C0', spawnMin:68,  spawnMax:110 },
+];
+
+// ── OBSTACLE TYPES ────────────────────────────────────────────────────────────
+// type 'ground': on ground, must JUMP over
+// type 'low':    very low bar, must SLIDE under
+// type 'float':  floating in air, jump or run under
+const OBS = [
+  [{type:'ground',h:42,w:28,emoji:'🧱'},{type:'ground',h:34,w:24,emoji:'🪵'}],
+  [{type:'ground',h:50,w:32,emoji:'🪑'},{type:'ground',h:36,w:26,emoji:'🌿'},{type:'low',h:24,w:62,emoji:'🐝'}],
+  [{type:'ground',h:50,w:28,emoji:'🌳'},{type:'low',h:24,w:66,emoji:'🐝'},{type:'float',h:34,w:30,emoji:'💦',fy:GROUND_Y-108}],
+  [{type:'ground',h:52,w:32,emoji:'🚧'},{type:'low',h:24,w:72,emoji:'🐦'},{type:'float',h:38,w:30,emoji:'📬',fy:GROUND_Y-118}],
+  [{type:'ground',h:56,w:32,emoji:'⭐'},{type:'low',h:24,w:78,emoji:'🌙'},{type:'float',h:40,w:32,emoji:'🍭',fy:GROUND_Y-113}],
+];
+
+// ── COLLECTIBLES ──────────────────────────────────────────────────────────────
+const CEMOJI = {bone:'🦴',coin:'🪙',turbo:'⚡',magnet:'🧲',star:'⭐'};
+const CGLOW  = {bone:'#FFD700',coin:'#FFD700',turbo:'#FF7030',magnet:'#60A5FA',star:'#FFB0D0'};
+
+// ── INPUT ─────────────────────────────────────────────────────────────────────
+let touchY0 = 0;
+document.addEventListener('keydown', e => {
+  if (gameState === 'start' && (e.code === 'Space'||e.code === 'Enter')) { startGame(); return; }
+  if (gameState !== 'playing') return;
+  if (e.code === 'Space'||e.code === 'ArrowUp'||e.code === 'KeyW') { e.preventDefault(); doJump(); }
+  if (e.code === 'ArrowDown'||e.code === 'KeyS')                    { e.preventDefault(); doSlide(); }
+});
+canvas.addEventListener('touchstart', e => {
+  touchY0 = e.touches[0].clientY;
+  if (gameState === 'start') startGame();
+}, {passive:true});
+canvas.addEventListener('touchend', e => {
+  if (gameState !== 'playing') return;
+  const dy = touchY0 - e.changedTouches[0].clientY;
+  if (dy > 25) doJump(); else if (dy < -25) doSlide();
+}, {passive:true});
+
+function doJump() {
+  if (pug.sliding) return;
+  if (pug.onGround) {
+    pug.vy = -20; pug.onGround = false; pug.jumpCount = 1;
+    burst(pug.x, pug.y, '#FFD700', 7);
+  } else if (pug.jumpCount === 1) {
+    pug.vy = -17; pug.jumpCount = 2;
+    burst(pug.x, pug.y-10, '#87CEEB', 9);
+    showToast('🌟 Double!');
+  }
+}
+function doSlide() {
+  if (!pug.onGround || pug.sliding) return;
+  pug.sliding = true; pug.slideTimer = 44;
+  showToast('🐾 Roll!');
+}
+
+// ── STARS INIT ────────────────────────────────────────────────────────────────
+const starsBg = document.getElementById('starsBg');
+for (let i = 0; i < 28; i++) {
+  const s = document.createElement('div');
+  s.className = 'star';
+  const sz = 3 + Math.random()*5;
+  s.style.cssText = `width:${sz}px;height:${sz}px;left:${Math.random()*100}%;top:${Math.random()*100}%;animation-delay:${Math.random()*3}s;animation-duration:${1.4+Math.random()*2}s`;
+  starsBg.appendChild(s);
+}
+document.getElementById('bestDisplay').textContent = bestScore;
+document.getElementById('bestHud').textContent     = bestScore;
+
+// ── GAME LIFECYCLE ────────────────────────────────────────────────────────────
+function startGame() {
+  gameState = 'playing';
+  score = 0; distance = 0; speed = 2.0; frame = 0; multiplier = 1;
+  currentStage = 0; obstCooldown = 90;
+  obstacles = []; collectibles = []; particles = []; powerups = [];
+  bgClouds = [];
+  for (let i = 0; i < 10; i++) bgClouds.push({x:Math.random()*W, y:60+Math.random()*220, spd:0.4+Math.random()*0.9, sc:0.65+Math.random()*0.75});
+
+  pug.x = PUG_X; pug.y = PUG_GROUND; pug.vy = 0;
+  pug.onGround = true; pug.jumpCount = 0;
+  pug.sliding = false; pug.slideTimer = 0;
+  pug.invincible = false; pug.invTimer = 0; pug.shield = false;
+
+  document.getElementById('startScreen').classList.add('hidden');
+  document.getElementById('gameOverScreen').classList.add('hidden');
+  document.getElementById('hud').classList.remove('hidden');
+  document.getElementById('controlsHint').style.display = 'flex';
+  showStageBanner(0);
+  requestAnimationFrame(gameLoop);
+}
+
+// ── UI HELPERS ────────────────────────────────────────────────────────────────
+function showStageBanner(i) {
+  document.getElementById('stageName').textContent = STAGES[i].name;
+  document.getElementById('stageDesc').textContent = STAGES[i].desc;
+  document.getElementById('stageBanner').classList.add('show');
+  stageBannerTimer = 115;
+}
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show'); toastTimer = 58;
+}
+
+// ── PARTICLES ─────────────────────────────────────────────────────────────────
+function burst(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({x, y, vx:(Math.random()-.5)*7, vy:(Math.random()-.5)*7-2,
+      life:28+Math.random()*22, maxLife:50, color, r:3+Math.random()*4});
+  }
+}
+
+// ── SPAWNING ──────────────────────────────────────────────────────────────────
+function trySpawnObstacle() {
+  obstCooldown++;
+  const s = STAGES[currentStage];
+  if (obstCooldown < s.spawnMin) return;
+  // Probability ramps 0→1 from spawnMin to spawnMax
+  const chance = (obstCooldown - s.spawnMin) / (s.spawnMax - s.spawnMin);
+  if (Math.random() > chance) return;
+  obstCooldown = 0;
+
+  const types = OBS[currentStage];
+  const t = types[Math.floor(Math.random() * types.length)];
+  let y, h = t.h, w = t.w;
+  if      (t.type === 'ground') y = GROUND_Y - h;
+  else if (t.type === 'low')    { y = GROUND_Y - h; }
+  else if (t.type === 'float')  y = t.fy;
+  obstacles.push({x: W+50, y, w, h, emoji:t.emoji, type:t.type});
+}
+
+function trySpawnCollectible() {
+  if (Math.random() > 0.016) return;
+  const pool = ['bone','coin','coin','turbo','magnet','star'];
+  const tp   = pool[Math.floor(Math.random()*pool.length)];
+  const fy   = GROUND_Y - 35 - Math.random()*90;
+  collectibles.push({x:W+50, y:fy, type:tp, phase:Math.random()*Math.PI*2});
+}
+
+// ── HITBOXES ──────────────────────────────────────────────────────────────────
+function getHitbox() {
+  // pug.y is feet level; head reaches ~54px above that
+  if (pug.sliding) return {x:pug.x-24, y:pug.y-20, w:48, h:22};
+  return              {x:pug.x-20, y:pug.y-56, w:44, h:58};
+}
+function overlaps(a, b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+// ── COLLECTIBLE EFFECTS ───────────────────────────────────────────────────────
+function applyCollect(type) {
+  if (type==='bone')   { score+=50*multiplier; showToast('🦴 +50!'); burst(pug.x,pug.y,'#FFD700',8); }
+  if (type==='coin')   { score+=10*multiplier; burst(pug.x,pug.y,'#FFD700',4); }
+  if (type==='turbo')  { powerups.push({type:'turbo', timer:180}); showToast('⚡ TURBO!'); burst(pug.x,pug.y,'#FF7030',12); }
+  if (type==='magnet') { powerups.push({type:'magnet',timer:280}); showToast('🧲 MAGNET!'); burst(pug.x,pug.y,'#60A5FA',10); }
+  if (type==='star')   { pug.invincible=true; pug.invTimer=240; showToast('⭐ INVINCIBLE!'); burst(pug.x,pug.y,'#FBBF24',18); }
+}
+
+// ── DEATH ─────────────────────────────────────────────────────────────────────
+function die() {
+  if (pug.invincible) return;
+  if (pug.shield) { pug.shield=false; showToast('🛡️ Shield broke!'); return; }
+  gameState = 'dead';
+  burst(pug.x, pug.y-20, '#FF3A00', 22);
+  const isNew = score > bestScore;
+  if (isNew) { bestScore = score; localStorage.setItem('pugBest', bestScore); }
+  document.getElementById('gameOverScreen').classList.remove('hidden');
+  document.getElementById('hud').classList.add('hidden');
+  document.getElementById('controlsHint').style.display = 'none';
+  document.getElementById('finalScore').textContent = Math.floor(score);
+  document.getElementById('finalDist').textContent  = '📏 '+Math.floor(distance)+'m run';
+  document.getElementById('bestDisplay').textContent = bestScore;
+  document.getElementById('bestHud').textContent     = bestScore;
+  document.getElementById('gameOverEmoji').textContent = ['💥','😵','🤕','💫','😬'][Math.floor(Math.random()*5)];
+  const nb = document.getElementById('newBestBadge');
+  if (isNew) nb.classList.remove('hidden'); else nb.classList.add('hidden');
+}
+
+// ── DRAW: BACKGROUND ──────────────────────────────────────────────────────────
+function drawBg() {
+  const s = STAGES[currentStage];
+  const skyG = ctx.createLinearGradient(0,0,0,GROUND_Y);
+  skyG.addColorStop(0,s.bgTop); skyG.addColorStop(1,s.bgBot);
+  ctx.fillStyle = skyG; ctx.fillRect(0,0,W,GROUND_Y);
+
+  bgClouds.forEach(c => {
+    c.x -= c.spd; if (c.x < -120) c.x = W+120;
+    ctx.save(); ctx.translate(c.x,c.y); ctx.scale(c.sc,c.sc);
+    ctx.fillStyle = 'rgba(255,255,255,0.82)';
+    ctx.beginPath();
+    ctx.arc(0,0,26,0,Math.PI*2); ctx.arc(30,-7,21,0,Math.PI*2);
+    ctx.arc(-30,-4,19,0,Math.PI*2); ctx.arc(14,-19,17,0,Math.PI*2);
+    ctx.fill(); ctx.restore();
+  });
+
+  const gndG = ctx.createLinearGradient(0,GROUND_Y,0,H);
+  gndG.addColorStop(0,s.gndColor); gndG.addColorStop(0.18,s.gndDark); gndG.addColorStop(1,'#2a1408');
+  ctx.fillStyle = gndG; ctx.fillRect(0,GROUND_Y,W,H-GROUND_Y);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fillRect(0,GROUND_Y,W,3);
+
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=2;
+  ctx.setLineDash([22,34]); ctx.lineDashOffset=-((frame*speed*0.5)%56);
+  ctx.beginPath(); ctx.moveTo(0,GROUND_Y+14); ctx.lineTo(W,GROUND_Y+14); ctx.stroke();
+  ctx.setLineDash([]); ctx.restore();
+}
+
+// ── DRAW: OBSTACLE ────────────────────────────────────────────────────────────
+function drawObstacle(o) {
+  ctx.save(); ctx.translate(o.x, o.y+o.h/2);
+  ctx.fillStyle='rgba(0,0,0,0.18)'; ctx.beginPath();
+  ctx.ellipse(0,o.h/2+3,o.w/2,5,0,0,Math.PI*2); ctx.fill();
+  const g=ctx.createLinearGradient(-o.w/2,-o.h/2,o.w/2,o.h/2);
+  g.addColorStop(0,'#FF7A45'); g.addColorStop(1,'#CC3300');
+  ctx.fillStyle=g; ctx.strokeStyle='#FF9966'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.roundRect(-o.w/2,-o.h/2,o.w,o.h,7); ctx.fill(); ctx.stroke();
+  ctx.font=`${Math.min(o.w,o.h)*0.72}px serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(o.emoji,0,0);
+  ctx.restore();
+}
+
+// ── DRAW: COLLECTIBLE ─────────────────────────────────────────────────────────
+function drawCollectible(c) {
+  const fy = c.y + Math.sin(frame*0.09+c.phase)*5;
+  ctx.save(); ctx.translate(c.x,fy);
+  ctx.shadowColor=CGLOW[c.type]; ctx.shadowBlur=14;
+  ctx.rotate(Math.sin(frame*0.06+c.phase)*0.18);
+  ctx.font='25px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(CEMOJI[c.type],0,0); ctx.restore();
+}
+
+// ── DRAW: THE PUG ─────────────────────────────────────────────────────────────
+// Origin is pug.x, pug.y  (feet/ground level).
+// We draw UP (negative y) from there.
+// The pug faces RIGHT. All measurements in pixels from origin.
+function drawPug() {
+  ctx.save();
+  ctx.translate(pug.x, pug.y);
+
+  if (pug.invincible) {
+    ctx.shadowColor='#FFD700';
+    ctx.shadowBlur = 20 + Math.sin(frame*0.28)*10;
+  }
+
+  // ════════════════════════════════════════════
+  // SLIDE / ROLLING BALL FORM
+  // ════════════════════════════════════════════
+  if (pug.sliding) {
+    ctx.save();
+    ctx.translate(0, -22);
+    ctx.rotate(frame * 0.22);
+
+    // main body ball — fawn
+    ctx.fillStyle='#C88050'; ctx.strokeStyle='#7A4820'; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.arc(0,0,26,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+    // cream belly
+    ctx.fillStyle='#E8B880';
+    ctx.beginPath(); ctx.ellipse(3,5,14,12,0.3,0,Math.PI*2); ctx.fill();
+
+    // black mask
+    ctx.fillStyle='#1A0C00';
+    ctx.beginPath(); ctx.ellipse(4,-2,14,10,-0.2,0,Math.PI*2); ctx.fill();
+
+    // big eye (white)
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(-2,-6,9,0,Math.PI*2); ctx.fill();
+    // iris
+    ctx.fillStyle='#4A2800'; ctx.beginPath(); ctx.arc(-1,-6,6.5,0,Math.PI*2); ctx.fill();
+    // pupil
+    ctx.fillStyle='#0A0400'; ctx.beginPath(); ctx.arc(0,-6,4,0,Math.PI*2); ctx.fill();
+    // shine
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(2,-9,2.2,0,Math.PI*2); ctx.fill();
+
+    // flat nose
+    ctx.fillStyle='#0A0400';
+    ctx.beginPath(); ctx.ellipse(10,-1,7,4.5,0,0,Math.PI*2); ctx.fill();
+
+    // lolling tongue
+    ctx.fillStyle='#E86060';
+    ctx.beginPath(); ctx.ellipse(12,8,5,8,0.4,0,Math.PI*2); ctx.fill();
+
+    // wrinkle spokes
+    ctx.strokeStyle='rgba(80,35,5,0.3)'; ctx.lineWidth=1.5;
+    for (let i=0;i<5;i++){
+      const a=(i/5)*Math.PI*2;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a)*9,Math.sin(a)*9);
+      ctx.lineTo(Math.cos(a)*24,Math.sin(a)*24); ctx.stroke();
+    }
+    ctx.restore();
+
+  // ════════════════════════════════════════════
+  // RUNNING / STANDING FORM
+  // ════════════════════════════════════════════
+  } else {
+    const bob = pug.onGround ? Math.sin(frame*0.42)*2.2 : 0;
+    ctx.translate(0, bob);
+
+    const legSwing = Math.sin(frame*0.44)*13;
+
+    // ground shadow
+    ctx.fillStyle='rgba(0,0,0,0.17)';
+    ctx.beginPath(); ctx.ellipse(2,4,27,6,0,0,Math.PI*2); ctx.fill();
+
+    // ── far back leg (dimmer, behind body) ──
+    ctx.save(); ctx.globalAlpha=0.6;
+    ctx.fillStyle='#9A5820'; ctx.strokeStyle='#5A3010'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(-16,-14+legSwing*0.45,13,22,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#7A3808';
+    ctx.beginPath(); ctx.ellipse(-9,8+legSwing*0.45,7,4,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // ── near back leg ──
+    ctx.fillStyle='#B06828'; ctx.strokeStyle='#6A3810'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(-11,-12-legSwing*0.5,14,22,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#8A4010';
+    ctx.beginPath(); ctx.ellipse(-4,10-legSwing*0.5,7,4,0,0,Math.PI*2); ctx.fill();
+
+    // ── CURLY CORKSCREW TAIL on rump ──
+    const tw = Math.sin(frame*0.44)*10;
+    ctx.strokeStyle='#A06030'; ctx.lineWidth=8; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.beginPath();
+    ctx.moveTo(-18,-10+tw*0.1);
+    ctx.bezierCurveTo(-30,-20+tw,-28,-32+tw,-18,-30+tw*0.8);
+    ctx.bezierCurveTo(-10,-28+tw*0.6,-12,-18+tw*0.4,-20,-16+tw*0.2);
+    ctx.stroke();
+    ctx.strokeStyle='#D09050'; ctx.lineWidth=3.5;
+    ctx.beginPath();
+    ctx.moveTo(-18,-10+tw*0.1);
+    ctx.bezierCurveTo(-29,-19+tw,-27,-31+tw,-18,-29+tw*0.8);
+    ctx.stroke();
+    ctx.fillStyle='#C8804A';
+    ctx.beginPath(); ctx.arc(-20,-16+tw*0.2,5,0,Math.PI*2); ctx.fill();
+
+    // ── CHUBBY BARREL BODY ──
+    const bodyG = ctx.createRadialGradient(-8,-14,5,0,-8,30);
+    bodyG.addColorStop(0,'#DFAF70'); bodyG.addColorStop(0.5,'#C88050'); bodyG.addColorStop(1,'#905028');
+    ctx.fillStyle=bodyG; ctx.strokeStyle='#7A4818'; ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.ellipse(0,-12,28,22,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+    // cream belly
+    ctx.fillStyle='#EEBB78';
+    ctx.beginPath(); ctx.ellipse(2,-8,16,15,0.1,0,Math.PI*2); ctx.fill();
+
+    // neck fold
+    ctx.strokeStyle='rgba(80,35,5,0.4)'; ctx.lineWidth=2; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(16,-22); ctx.quadraticCurveTo(22,-16,20,-8); ctx.stroke();
+
+    // ── far front leg ──
+    ctx.save(); ctx.globalAlpha=0.62;
+    ctx.fillStyle='#9A5820'; ctx.strokeStyle='#5A3010'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(10,-20+legSwing*0.55,14,24,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#7A3808';
+    ctx.beginPath(); ctx.ellipse(17,4+legSwing*0.55,7,4,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // ── near front leg ──
+    ctx.fillStyle='#C88050'; ctx.strokeStyle='#7A4818'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(14,-18-legSwing*0.6,14,24,6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#8A4010';
+    ctx.beginPath(); ctx.ellipse(21,6-legSwing*0.6,7,4,0,0,Math.PI*2); ctx.fill();
+
+    // ── neck ──
+    ctx.fillStyle='#C88050';
+    ctx.beginPath(); ctx.ellipse(20,-26,13,11,-0.15,0,Math.PI*2); ctx.fill();
+
+    // ════════════════════════════════════════════
+    // THE MAGNIFICENT PUG HEAD
+    // Centre at (HX, HY) from feet origin
+    // ════════════════════════════════════════════
+    const HX = 22, HY = -44;
+
+    // ── BACK ear ──
+    ctx.fillStyle='#7A3818';
+    ctx.beginPath();
+    ctx.moveTo(HX-14,HY-18);
+    ctx.bezierCurveTo(HX-26,HY-28,HX-30,HY-12,HX-22,HY-2);
+    ctx.bezierCurveTo(HX-14,HY+4,HX-6,HY-8,HX-10,HY-18);
+    ctx.closePath(); ctx.fill();
+
+    // ── FRONT ear (floppy flap) ──
+    const earFlap = Math.sin(frame*0.42)*3;
+    ctx.fillStyle='#8A4020';
+    ctx.beginPath();
+    ctx.moveTo(HX+12,HY-22+earFlap);
+    ctx.bezierCurveTo(HX+24,HY-30+earFlap,HX+28,HY-14+earFlap,HX+20,HY-4+earFlap);
+    ctx.bezierCurveTo(HX+14,HY+2+earFlap,HX+6,HY-10+earFlap,HX+10,HY-22+earFlap);
+    ctx.closePath(); ctx.fill();
+    // ear inner shadow
+    ctx.fillStyle='rgba(40,10,0,0.28)';
+    ctx.beginPath();
+    ctx.moveTo(HX+13,HY-19+earFlap);
+    ctx.bezierCurveTo(HX+20,HY-24+earFlap,HX+22,HY-13+earFlap,HX+17,HY-6+earFlap);
+    ctx.bezierCurveTo(HX+12,HY-2+earFlap,HX+8,HY-10+earFlap,HX+11,HY-19+earFlap);
+    ctx.closePath(); ctx.fill();
+
+    // ── HEAD DOME — large, round, disproportionate ──
+    const headG = ctx.createRadialGradient(HX-10,HY-14,4,HX,HY,27);
+    headG.addColorStop(0,'#E8C080'); headG.addColorStop(0.45,'#C88050'); headG.addColorStop(1,'#8A5025');
+    ctx.fillStyle=headG; ctx.strokeStyle='#7A4818'; ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.arc(HX,HY,27,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+    // ── FOREHEAD WRINKLE ROLLS (3 deep horizontal folds) ──
+    ctx.lineCap='round';
+    ctx.strokeStyle='#9A5825'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(HX-14,HY-20); ctx.quadraticCurveTo(HX,HY-26,HX+14,HY-20); ctx.stroke();
+    ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.moveTo(HX-16,HY-13); ctx.quadraticCurveTo(HX,HY-19,HX+16,HY-13); ctx.stroke();
+    ctx.lineWidth=2; ctx.strokeStyle='rgba(120,60,20,0.7)';
+    ctx.beginPath(); ctx.moveTo(HX-17,HY-6); ctx.quadraticCurveTo(HX,HY-11,HX+17,HY-6); ctx.stroke();
+
+    // ── BLACK FACIAL MASK — the defining pug feature ──
+    // Gradient mask fading at edges
+    const maskG = ctx.createRadialGradient(HX+5,HY+3,4,HX+4,HY+2,22);
+    maskG.addColorStop(0,'#140800'); maskG.addColorStop(0.65,'#1C0C00'); maskG.addColorStop(1,'rgba(28,12,0,0)');
+    ctx.fillStyle=maskG;
+    ctx.beginPath(); ctx.ellipse(HX+5,HY+3,22,18,0.1,0,Math.PI*2); ctx.fill();
+    // solid inner
+    ctx.fillStyle='#1A0A00';
+    ctx.beginPath(); ctx.ellipse(HX+4,HY+2,15,13,0.05,0,Math.PI*2); ctx.fill();
+
+    // ── LEFT BUG EYE — enormous, round, bulging ──
+    // sclera
+    ctx.fillStyle='#FFFAF5'; ctx.strokeStyle='#1A0A00'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(HX-9,HY-4,12,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    // iris
+    ctx.fillStyle='#6A3808'; ctx.beginPath(); ctx.arc(HX-8,HY-4,8.5,0,Math.PI*2); ctx.fill();
+    // pupil
+    ctx.fillStyle='#0C0500'; ctx.beginPath(); ctx.arc(HX-7,HY-4,5.5,0,Math.PI*2); ctx.fill();
+    // shine
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(HX-4,HY-8,3,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=0.55; ctx.beginPath(); ctx.arc(HX-10,HY-11,1.5,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+    // brow crinkle
+    ctx.strokeStyle='#9A5825'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(HX-20,HY-10); ctx.quadraticCurveTo(HX-8,HY-18,HX+2,HY-10); ctx.stroke();
+
+    // ── RIGHT BUG EYE ──
+    ctx.fillStyle='#FFFAF5'; ctx.strokeStyle='#1A0A00'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(HX+13,HY-3,11,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6A3808'; ctx.beginPath(); ctx.arc(HX+14,HY-3,7.5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#0C0500'; ctx.beginPath(); ctx.arc(HX+15,HY-3,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(HX+18,HY-7,2.5,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=0.5; ctx.beginPath(); ctx.arc(HX+10,HY-9,1.4,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+    ctx.strokeStyle='#9A5825'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(HX+3,HY-9); ctx.quadraticCurveTo(HX+13,HY-16,HX+23,HY-9); ctx.stroke();
+
+    // ── MUZZLE ROLLS (fat folds flanking nose) ──
+    ctx.fillStyle='#2A1200'; ctx.strokeStyle='#4A2408'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.ellipse(HX-4,HY+10,9,7,-0.35,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(HX+14,HY+10,9,7,0.35,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+    // ── FLAT WIDE NOSE (squished against face) ──
+    ctx.fillStyle='#0C0500';
+    ctx.beginPath(); ctx.ellipse(HX+5,HY+8,11,7,0,0,Math.PI*2); ctx.fill();
+    // nostrils
+    ctx.fillStyle='#050200';
+    ctx.beginPath(); ctx.ellipse(HX-1,HY+9,3.5,2.5,-0.25,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(HX+11,HY+8,3.5,2.5,0.25,0,Math.PI*2); ctx.fill();
+    // nose bridge crease
+    ctx.strokeStyle='rgba(5,2,0,0.75)'; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(HX+5,HY+1); ctx.lineTo(HX+5,HY+8); ctx.stroke();
+    // nose shine
+    ctx.fillStyle='rgba(255,255,255,0.14)';
+    ctx.beginPath(); ctx.ellipse(HX+2,HY+5,5,3,-0.3,0,Math.PI*2); ctx.fill();
+
+    // ── LOLLING TONGUE ──
+    const tong = Math.sin(frame*0.26)*2.8;
+    // tongue body
+    ctx.fillStyle='#E06868';
+    ctx.beginPath();
+    ctx.moveTo(HX-2,HY+14);
+    ctx.bezierCurveTo(HX-6,HY+18+tong,HX-4,HY+26+tong,HX+2,HY+26+tong);
+    ctx.bezierCurveTo(HX+8,HY+26+tong,HX+10,HY+18+tong,HX+7,HY+14);
+    ctx.closePath(); ctx.fill();
+    // highlight
+    ctx.fillStyle='#FF9898';
+    ctx.beginPath(); ctx.ellipse(HX+2,HY+19+tong,4.5,6,0,0,Math.PI*2); ctx.fill();
+    // groove
+    ctx.strokeStyle='#C04848'; ctx.lineWidth=1.5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(HX+2,HY+15); ctx.lineTo(HX+2,HY+25+tong); ctx.stroke();
+    // outline
+    ctx.strokeStyle='#C05050'; ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(HX-2,HY+14);
+    ctx.bezierCurveTo(HX-6,HY+18+tong,HX-4,HY+26+tong,HX+2,HY+26+tong);
+    ctx.bezierCurveTo(HX+8,HY+26+tong,HX+10,HY+18+tong,HX+7,HY+14);
+    ctx.stroke();
+  }
+
+  // ── SHIELD BUBBLE ──
+  if (pug.shield) {
+    ctx.strokeStyle='rgba(96,165,250,0.72)'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(10,-28,52,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle='rgba(96,165,250,0.07)'; ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ── DRAW: PARTICLES ───────────────────────────────────────────────────────────
+function drawParticles() {
+  particles.forEach(p => {
+    const a = p.life/p.maxLife;
+    ctx.save(); ctx.globalAlpha=a; ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*a,0,Math.PI*2); ctx.fill(); ctx.restore();
+  });
+}
+
+// ── POWERUP HUD ───────────────────────────────────────────────────────────────
+function updatePowerupHud() {
+  const icons={turbo:'⚡',magnet:'🧲'};
+  document.getElementById('powerupDisplay').innerHTML =
+    powerups.map(p=>`<div class="powerup-icon">${icons[p.type]||'✨'} ${'▪'.repeat(Math.min(Math.ceil(p.timer/45),6))}</div>`).join('') +
+    (pug.invincible?'<div class="powerup-icon">⭐ STAR</div>':'');
+}
+
+// ── GAME LOOP ─────────────────────────────────────────────────────────────────
+function gameLoop() {
+  if (gameState !== 'playing') return;
+
+  frame++;
+  distance += speed * 0.14;
+  score    += speed * 0.09 * multiplier;
+
+  // Speed ramp: 2.0 base, +0.22 every 500m, max 7.5
+  speed = Math.min(2.0 + Math.floor(distance/500)*0.22, 7.5);
+
+  // Stage transitions
+  let ns = 0;
+  for (let i=STAGES.length-1;i>=0;i--) { if (distance>=STAGES[i].minDist){ns=i;break;} }
+  if (ns > currentStage) {
+    currentStage = ns;
+    showStageBanner(currentStage);
+    burst(W/2,H/2,'#FFD700',30);
+  }
+
+  // Powerup timers
+  let hasTurbo=false, hasMagnet=false;
+  for (let i=powerups.length-1;i>=0;i--) {
+    powerups[i].timer--;
+    if (powerups[i].timer<=0) { showToast(powerups[i].type+' ended'); powerups.splice(i,1); continue; }
+    if (powerups[i].type==='turbo')  hasTurbo=true;
+    if (powerups[i].type==='magnet') hasMagnet=true;
+  }
+  if (hasTurbo) speed = Math.min(speed*1.28, 9.5);
+
+  // Invincibility
+  if (pug.invincible) { pug.invTimer--; if (pug.invTimer<=0) pug.invincible=false; }
+
+  // Slide timer
+  if (pug.sliding) { pug.slideTimer--; if (pug.slideTimer<=0) pug.sliding=false; }
+
+  // Pug x is always fixed left
+  pug.x = PUG_X;
+
+  // Gravity
+  if (!pug.onGround) {
+    pug.vy += 0.52; pug.y += pug.vy;
+    if (pug.y >= PUG_GROUND) {
+      pug.y=PUG_GROUND; pug.vy=0; pug.onGround=true; pug.jumpCount=0;
+      burst(pug.x,pug.y,'#FFCC40',4);
+    }
+  }
+
+  // Spawn
+  trySpawnObstacle();
+  trySpawnCollectible();
+
+  // Move + collide obstacles
+  for (let i=obstacles.length-1;i>=0;i--) {
+    obstacles[i].x -= speed;
+    if (obstacles[i].x < -90) { obstacles.splice(i,1); continue; }
+    const phb = getHitbox();
+    const ohb = {x:obstacles[i].x-obstacles[i].w/2, y:obstacles[i].y, w:obstacles[i].w, h:obstacles[i].h};
+    if (overlaps(phb, ohb)) {
+      if (obstacles[i].type==='low'   && phb.y+phb.h < ohb.y+6)      continue; // jumped over
+      if (obstacles[i].type==='float' && phb.y        > ohb.y+ohb.h-6) continue; // ran under
+      burst(pug.x,pug.y-20,'#FF3A00',14);
+      die(); break;
+    }
+  }
+
+  // Move + collect collectibles
+  for (let i=collectibles.length-1;i>=0;i--) {
+    collectibles[i].x -= speed;
+    if (hasMagnet) {
+      collectibles[i].x += (pug.x - collectibles[i].x)*0.07;
+      collectibles[i].y += ((pug.y-40) - collectibles[i].y)*0.07;
+    }
+    if (collectibles[i].x < -60) { collectibles.splice(i,1); continue; }
+    const phb = getHitbox();
+    const cb  = {x:collectibles[i].x-17, y:collectibles[i].y-17, w:34, h:34};
+    if (overlaps(phb,cb)) { applyCollect(collectibles[i].type); collectibles.splice(i,1); }
+  }
+
+  // Particles
+  for (let i=particles.length-1;i>=0;i--) {
+    const p=particles[i];
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.18; p.life--;
+    if (p.life<=0) particles.splice(i,1);
+  }
+
+  // UI timers
+  if (stageBannerTimer>0 && --stageBannerTimer===0) document.getElementById('stageBanner').classList.remove('show');
+  if (toastTimer>0       && --toastTimer===0)       document.getElementById('toast').classList.remove('show');
+
+  // HUD
+  document.getElementById('scoreDisplay').textContent = Math.floor(score);
+  document.getElementById('distDisplay').textContent  = Math.floor(distance)+'m';
+  updatePowerupHud();
+
+  // Render
+  ctx.clearRect(0,0,W,H);
+  drawBg();
+  obstacles.forEach(drawObstacle);
+  collectibles.forEach(drawCollectible);
+  drawPug();
+  drawParticles();
+
+  // Speed bar
+  ctx.fillStyle='rgba(0,0,0,0.28)'; ctx.fillRect(10,H-14,W-20,5);
+  ctx.fillStyle=`hsl(${120-(speed/7.5)*120},82%,54%)`;
+  ctx.fillRect(10,H-14,((speed-2.0)/5.5)*(W-20),5);
+
+  if (gameState==='playing') requestAnimationFrame(gameLoop);
+}
+
+// ── BUTTONS ───────────────────────────────────────────────────────────────────
+document.getElementById('playBtn').addEventListener('click', startGame);
+document.getElementById('retryBtn').addEventListener('click', startGame);
+document.getElementById('menuBtn').addEventListener('click', () => {
+  document.getElementById('gameOverScreen').classList.add('hidden');
+  document.getElementById('startScreen').classList.remove('hidden');
+  document.getElementById('bestDisplay').textContent = bestScore;
+  gameState = 'start';
+});
+
+// Paint canvas bg before game starts
+ctx.fillStyle='#FF9EBC'; ctx.fillRect(0,0,W,H);
+</script>
+</body>
+</html>
