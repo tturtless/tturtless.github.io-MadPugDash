@@ -2362,6 +2362,51 @@ document.getElementById("addClose").addEventListener("click",()=>{document.getEl
 document.getElementById("addModal").addEventListener("click",e=>{if(e.target===document.getElementById("addModal"))document.getElementById("addModal").classList.remove("open")});
 document.getElementById("addSearchInput").addEventListener("keydown",e=>{if(e.key==="Enter")searchAlbums()});
 
+// ── DROPDOWN COVER ART FOR DISCOGS RESULTS ──
+// Discogs CDN blocks cross-origin <img> loads. For Discogs results in the
+// autocomplete and search-results list we resolve real art via iTunes (CORS-open),
+// falling back to the CAA cache so repeated searches don't re-fetch.
+async function resolveDropdownArt(imgEl, artist, title) {
+  if (!artist || !title) return;
+  const ck = (artist + "|" + title).toLowerCase();
+  // 1. Already in cache?
+  if (caaCache[ck]) { imgEl.src = caaCache[ck]; return; }
+  // 2. iTunes lookup
+  try {
+    const q = encodeURIComponent(artist + " " + title);
+    const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=album&limit=10`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const normT = normCover(title), normA = normCover(artist);
+    let best = null;
+    for (const res of (d.results || [])) {
+      const rT = normCover(res.collectionName || "");
+      const rA = normCover(res.artistName || "");
+      const artistMatch = rA === normA || (normA.length > 2 && (rA.includes(normA) || normA.includes(rA)));
+      const titleMatch  = rT === normT  || (normT.length > 2 && (rT.includes(normT)  || normT.includes(rT)));
+      if (artistMatch && titleMatch) { best = res; break; }
+      if (artistMatch && !best) best = res;
+    }
+    if (best) {
+      const url = (best.artworkUrl100 || best.artworkUrl60 || "").replace("100x100bb", "600x600bb");
+      if (url) {
+        caaCache[ck] = url; saveCaaCache();
+        if (document.contains(imgEl)) imgEl.src = url;
+      }
+    }
+  } catch {}
+}
+
+function resolveDropdownArtsIn(container, results) {
+  container.querySelectorAll("img[data-src-idx]").forEach(img => {
+    const item = results[+img.dataset.srcIdx];
+    if (!item) return;
+    // Only needed for Discogs — other sources already have working art URLs
+    if (item._src !== "discogs") return;
+    resolveDropdownArt(img, item.artistName || "", item.collectionName || "");
+  });
+}
+
 // ── AUTOCOMPLETE ENGINE ──
 function closeAutocomplete(dropId){const d=document.getElementById(dropId);if(d)d.classList.remove("open")}
 
@@ -2372,11 +2417,12 @@ function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">\
+<img class="ac-thumb" src="${item._src!=='discogs'?item.artworkUrl60||'':''}" data-src-idx="${i}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
   dropEl.classList.add("open");
+  resolveDropdownArtsIn(dropEl, results);
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
   });
@@ -2428,7 +2474,7 @@ async function searchAlbums(){
           </div>`
         :`<button class="search-result-add" data-idx="${i}">Add</button>`;
       return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">
+        <img class="search-result-thumb" src="${item._src!=='discogs'?item.artworkUrl60||'':''}" data-src-idx="${i}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">
         <div class="search-result-info">
           <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
           <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
@@ -2437,6 +2483,7 @@ async function searchAlbums(){
       </div>`;
     }).join("");
 
+    resolveDropdownArtsIn(list, results);
     list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
       btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
     });
