@@ -2365,23 +2365,6 @@ document.getElementById("addSearchInput").addEventListener("keydown",e=>{if(e.ke
 // ── AUTOCOMPLETE ENGINE ──
 function closeAutocomplete(dropId){const d=document.getElementById(dropId);if(d)d.classList.remove("open")}
 
-// Proxy Discogs CDN image through fetch+blob so the token goes in the request
-// and browser hotlink-protection/CORS doesn't block the <img> load.
-const _discogsImgCache = new Map();
-async function loadDiscogsThumb(imgEl, url) {
-  if (!url) return;
-  if (_discogsImgCache.has(url)) { imgEl.src = _discogsImgCache.get(url); return; }
-  try {
-    const headers = { "User-Agent": DISCOGS_UA };
-    if (DISCOGS_TOKEN) headers["Authorization"] = `Discogs token=${DISCOGS_TOKEN}`;
-    const r = await fetch(url, { headers });
-    if (!r.ok) return;
-    const blob = await r.blob();
-    const objUrl = URL.createObjectURL(blob);
-    _discogsImgCache.set(url, objUrl);
-    if (document.contains(imgEl)) imgEl.src = objUrl;
-  } catch {}
-}
 
 function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
   if(!results||!results.length){dropEl.classList.remove("open");return}
@@ -2389,16 +2372,11 @@ function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${item._src==='discogs' ? '' : item.artworkUrl60||''}" data-discogs-thumb="${item._src==='discogs' ? encodeURIComponent(item._discogsThumb||item.artworkUrl60||'') : ''}" alt="" referrerpolicy="no-referrer">\
+<img class="ac-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
   dropEl.classList.add("open");
-  // Async-load Discogs thumbnails via proxied fetch to bypass hotlink protection
-  dropEl.querySelectorAll("img[data-discogs-thumb]").forEach(img=>{
-    const url = decodeURIComponent(img.dataset.discogsThumb||"");
-    if (url) loadDiscogsThumb(img, url);
-  });
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
   });
@@ -2450,7 +2428,7 @@ async function searchAlbums(){
           </div>`
         :`<button class="search-result-add" data-idx="${i}">Add</button>`;
       return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${item._src==='discogs' ? '' : item.artworkUrl60||''}" data-discogs-thumb="${item._src==='discogs' ? encodeURIComponent(item._discogsThumb||item.artworkUrl60||'') : ''}" alt="" referrerpolicy="no-referrer">
+        <img class="search-result-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">
         <div class="search-result-info">
           <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
           <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
@@ -2459,11 +2437,6 @@ async function searchAlbums(){
       </div>`;
     }).join("");
 
-    // Async-load Discogs thumbnails via proxied fetch
-    list.querySelectorAll("img[data-discogs-thumb]").forEach(img=>{
-      const url = decodeURIComponent(img.dataset.discogsThumb||"");
-      if (url) loadDiscogsThumb(img, url);
-    });
     list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
       btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
     });
