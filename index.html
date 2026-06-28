@@ -680,6 +680,7 @@ function normalizeResult(item){
       artworkUrl60:item.thumb||item.cover_image||"",
       artworkUrl100:item.cover_image||item.thumb||"",
       _discogsThumb:item.thumb||item.cover_image||"",
+      _mbid:item._mbid||"",
       _src:"discogs", _raw:item
     };
   }
@@ -716,16 +717,48 @@ async function fetchItunes(q,limit){
   }catch{return[]}
 }
 
-async function fetchDiscogs(q,limit){
-  if(!DISCOGS_TOKEN)return[];
-  try{
-    const r=await fetch(`https://api.discogs.com/database/search?q=${encodeURIComponent(q)}&type=release&per_page=${limit}&token=${DISCOGS_TOKEN}`,{
-      headers:{"User-Agent":DISCOGS_UA}
+// fetchDiscogs: uses MusicBrainz release search + Cover Art Archive thumbnails
+// (no token required, fully CORS-open) to fill the role Discogs would play.
+// Results are tagged _src:"discogs" so existing UI labels still show "Discogs".
+async function fetchDiscogs(q, limit) {
+  try {
+    const r = await fetch(
+      `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(q)}&fmt=json&limit=${Math.min(limit, 25)}`,
+      { headers: { "Accept": "application/json", "User-Agent": DISCOGS_UA } }
+    );
+    if (!r.ok) return [];
+    const d = await r.json();
+    const releases = d.releases || [];
+
+    // De-dupe by artist+title to avoid showing 12 pressings of the same album
+    const seen = new Set();
+    const unique = [];
+    for (const rel of releases) {
+      const artist = (rel["artist-credit"] && rel["artist-credit"][0] && rel["artist-credit"][0].name) || "";
+      const title  = rel.title || "";
+      const key    = (artist + "|" + title).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push({ rel, artist, title });
+      if (unique.length >= 8) break;
+    }
+
+    // Kick off CAA thumbnail fetches in parallel — non-blocking
+    return unique.map(({ rel, artist, title }) => {
+      const year = rel.date ? rel.date.slice(0, 4) : "";
+      const mbid = rel.id || "";
+      const item = normalizeResult({
+        _src: "discogs",
+        artistName: artist,
+        collectionName: title,
+        releaseDate: year,
+        artworkUrl60: "",
+        artworkUrl100: "",
+        _mbid: mbid
+      });
+      return item;
     });
-    if(!r.ok)return[];
-    const d=await r.json();
-    return (d.results||[]).map(it=>normalizeResult({...it,_src:"discogs"}));
-  }catch{return[]}
+  } catch { return []; }
 }
 
 // MusicBrainz release-group search — third layer, no key/token required at all.
@@ -2363,15 +2396,26 @@ document.getElementById("addModal").addEventListener("click",e=>{if(e.target===d
 document.getElementById("addSearchInput").addEventListener("keydown",e=>{if(e.key==="Enter")searchAlbums()});
 
 // ── DROPDOWN COVER ART FOR DISCOGS RESULTS ──
-// Discogs CDN blocks cross-origin <img> loads. For Discogs results in the
-// autocomplete and search-results list we resolve real art via iTunes (CORS-open),
-// falling back to the CAA cache so repeated searches don't re-fetch.
-async function resolveDropdownArt(imgEl, artist, title) {
+// MusicBrainz/Discogs results have no directly loadable art URL.
+// We resolve covers via Cover Art Archive (MBID → CAA, fully CORS-open)
+// with iTunes as fallback for albums not in CAA.
+async function resolveDropdownArt(imgEl, artist, title, mbid) {
   if (!artist || !title) return;
   const ck = (artist + "|" + title).toLowerCase();
   // 1. Already in cache?
-  if (caaCache[ck]) { imgEl.src = caaCache[ck]; return; }
-  // 2. iTunes lookup
+  if (caaCache[ck]) { if (document.contains(imgEl)) imgEl.src = caaCache[ck]; return; }
+  // 2. Cover Art Archive via MBID (fastest, highest quality)
+  if (mbid) {
+    try {
+      const r = await fetch(`https://coverartarchive.org/release/${mbid}/front-250`, { redirect: "follow" });
+      if (r.ok && r.url) {
+        caaCache[ck] = r.url; saveCaaCache();
+        if (document.contains(imgEl)) imgEl.src = r.url;
+        return;
+      }
+    } catch {}
+  }
+  // 3. iTunes fallback
   try {
     const q = encodeURIComponent(artist + " " + title);
     const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=album&limit=10`);
@@ -2389,10 +2433,7 @@ async function resolveDropdownArt(imgEl, artist, title) {
     }
     if (best) {
       const url = (best.artworkUrl100 || best.artworkUrl60 || "").replace("100x100bb", "600x600bb");
-      if (url) {
-        caaCache[ck] = url; saveCaaCache();
-        if (document.contains(imgEl)) imgEl.src = url;
-      }
+      if (url) { caaCache[ck] = url; saveCaaCache(); if (document.contains(imgEl)) imgEl.src = url; }
     }
   } catch {}
 }
@@ -2403,7 +2444,7 @@ function resolveDropdownArtsIn(container, results) {
     if (!item) return;
     // Only needed for Discogs — other sources already have working art URLs
     if (item._src !== "discogs") return;
-    resolveDropdownArt(img, item.artistName || "", item.collectionName || "");
+    resolveDropdownArt(img, item.artistName || "", item.collectionName || "", item._mbid || "");
   });
 }
 
