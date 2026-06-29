@@ -196,7 +196,7 @@
   .add-search-btn{background:var(--gold);border:none;border-radius:3px;color:var(--bg);font-family:'Inter',sans-serif;font-size:12px;font-weight:700;padding:9px 16px;cursor:pointer;transition:background .2s;white-space:nowrap}
   .add-search-btn:hover{background:#DFB95C}
   .add-search-btn:disabled{opacity:.5;cursor:not-allowed}
-  .search-results-list{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+  .search-results-list{margin-top:12px;display:flex;flex-direction:column;gap:6px;max-height:420px;overflow-y:auto}
   .search-result-row{display:flex;align-items:center;gap:12px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:3px;transition:border-color .15s}
   .search-result-row:hover{border-color:var(--gold-dim)}
   .search-result-thumb{width:44px;height:44px;border-radius:2px;object-fit:cover;background:var(--groove);flex-shrink:0}
@@ -229,7 +229,7 @@
 
   /* AUTOCOMPLETE DROPDOWN */
   .autocomplete-wrap{position:relative;flex:1}
-  .autocomplete-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--surface2);border:1px solid var(--gold-dim);border-top:none;border-radius:0 0 4px 4px;z-index:50;max-height:260px;overflow-y:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.7)}
+  .autocomplete-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--surface2);border:1px solid var(--gold-dim);border-top:none;border-radius:0 0 4px 4px;z-index:50;max-height:400px;overflow-y:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.7)}
   .autocomplete-dropdown.open{display:block}
   .ac-row{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--border)}
   .ac-row:last-child{border-bottom:none}
@@ -529,7 +529,7 @@
     <button class="modal-close" id="addClose">×</button>
     <div class="add-modal-header">
       <h2>Add to The Crate</h2>
-      <p>Search Apple Music, iTunes &amp; Discogs — albums already in your crate show an "Add Duplicate" option</p>
+      <p>Search iTunes &amp; Discogs — albums already in your crate show an "Add Duplicate" option</p>
     </div>
     <div class="add-search-area">
       <div class="add-search-row">
@@ -679,17 +679,14 @@ function normalizeResult(item){
       releaseDate:item.year?String(item.year):"",
       artworkUrl60:item.thumb||item.cover_image||"",
       artworkUrl100:item.cover_image||item.thumb||"",
-      _discogsThumb:item.thumb||item.cover_image||"",
-      _mbid:item._mbid||"",
+      _releaseId:item._releaseId||"",
       _src:"discogs", _raw:item
     };
   }
-  // Preserve _src if already set (e.g. "applemusic", "musicbrainz"); default to "itunes"
   return {
     artistName:item.artistName||"", collectionName:item.collectionName||"",
     releaseDate:item.releaseDate||"", artworkUrl60:item.artworkUrl60||"",
-    artworkUrl100:item.artworkUrl100||"", collectionViewUrl:item.collectionViewUrl||"",
-    _src:item._src||"itunes", _raw:item
+    artworkUrl100:item.artworkUrl100||"", _src:"itunes", _raw:item
   };
 }
 
@@ -717,47 +714,104 @@ async function fetchItunes(q,limit){
   }catch{return[]}
 }
 
-// fetchDiscogs: uses MusicBrainz release search + Cover Art Archive thumbnails
-// (no token required, fully CORS-open) to fill the role Discogs would play.
-// Results are tagged _src:"discogs" so existing UI labels still show "Discogs".
+// ── DISCOGS COVER ART LOADER ──
+// Fetches Discogs release page via allorigins.win proxy, scrapes the <img src>,
+// then fetches the image itself through the proxy and converts to a blob URL
+// so the browser can display it without hitting Discogs CDN cross-origin blocks.
+const _discogsBlobCache = new Map();
+
+async function fetchDiscogsImageAsBlob(imgUrl) {
+  if (!imgUrl) return null;
+  if (_discogsBlobCache.has(imgUrl)) return _discogsBlobCache.get(imgUrl);
+  try {
+    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(imgUrl)}`;
+    const r = await fetch(proxy);
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    _discogsBlobCache.set(imgUrl, objUrl);
+    return objUrl;
+  } catch { return null; }
+}
+
+async function resolveDiscogsThumb(imgEl, releaseId) {
+  if (!releaseId || !document.contains(imgEl)) return;
+  try {
+    // Fetch the Discogs release page HTML through the proxy
+    const pageUrl = `https://www.discogs.com/release/${releaseId}`;
+    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(pageUrl)}`;
+    const r = await fetch(proxy);
+    if (!r.ok) return;
+    const html = await r.text();
+    // Parse out the first album cover img src from the page
+    const match = html.match(/<img[^>]+class="[^"]*image_[^"]*"[^>]+src="(https:\/\/i\.discogs\.com\/[^"]+)"/i)
+                || html.match(/src="(https:\/\/i\.discogs\.com\/[^"]+\.(?:jpeg|jpg|png|gif))"/i);
+    if (!match) return;
+    const imgUrl = match[1];
+    const blobUrl = await fetchDiscogsImageAsBlob(imgUrl);
+    if (blobUrl && document.contains(imgEl)) imgEl.src = blobUrl;
+  } catch {}
+}
+
 async function fetchDiscogs(q, limit) {
   try {
-    const r = await fetch(
-      `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(q)}&fmt=json&limit=${Math.min(limit, 25)}`,
-      { headers: { "Accept": "application/json", "User-Agent": DISCOGS_UA } }
-    );
+    // Fetch the Discogs search page through the proxy
+    const searchUrl = `https://www.discogs.com/search/?q=${encodeURIComponent(q)}&type=master&per_page=${Math.min(limit,25)}`;
+    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(searchUrl)}`;
+    const r = await fetch(proxy);
     if (!r.ok) return [];
-    const d = await r.json();
-    const releases = d.releases || [];
+    const html = await r.text();
 
-    // De-dupe by artist+title to avoid showing 12 pressings of the same album
+    // Parse search results: each result is a <div class="card ..."> with data attributes
+    // Discogs search HTML structure:
+    // <div class="card_sH2bh ..." data-id="12345" data-object-type="master">
+    //   <h4 ...><a href="/master/12345-Artist-Title">Artist - Title</a></h4>
+    //   <p ...>year</p>
+    //   <img data-src="https://i.discogs.com/..." ...>
+    // </div>
+    //
+    // Split into one chunk per card (each starts at its own data-id="...") and read
+    // title/thumb/year out of the SAME chunk. The previous version ran three
+    // separate global regexes and zipped them together by index, which silently
+    // mismatched a title with the wrong thumbnail (or no thumbnail at all) any
+    // time a single card was missing one of those fields.
+    const results = [];
     const seen = new Set();
-    const unique = [];
-    for (const rel of releases) {
-      const artist = (rel["artist-credit"] && rel["artist-credit"][0] && rel["artist-credit"][0].name) || "";
-      const title  = rel.title || "";
-      const key    = (artist + "|" + title).toLowerCase();
+    const chunks = html.split(/(?=data-id="\d+")/);
+
+    const linkRe = /href="\/(?:master|release)\/(\d+)[^"]*"[^>]*>([^<]+)<\/a>/i;
+    const thumbRe = /(?:data-src|src)="(https:\/\/i\.discogs\.com\/[^"]+\.(?:jpe?g|png|gif)[^"]*)"/i;
+    const yearRe = /<p[^>]*class="[^"]*card_year[^"]*"[^>]*>(\d{4})<\/p>/i;
+
+    for (const chunk of chunks) {
+      if (results.length >= limit) break;
+      const linkMatch = chunk.match(linkRe);
+      if (!linkMatch) continue;
+      const [, id, rawTitle] = linkMatch;
+      const title = rawTitle.trim();
+      // Discogs titles on search are "Artist - Album"
+      const sep = title.indexOf(" - ");
+      const artistName = sep > -1 ? title.slice(0, sep).trim() : "";
+      const collectionName = sep > -1 ? title.slice(sep + 3).trim() : title;
+      if (!collectionName) continue;
+      const key = (artistName + "|" + collectionName).toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      unique.push({ rel, artist, title });
-      if (unique.length >= 8) break;
-    }
 
-    // Kick off CAA thumbnail fetches in parallel — non-blocking
-    return unique.map(({ rel, artist, title }) => {
-      const year = rel.date ? rel.date.slice(0, 4) : "";
-      const mbid = rel.id || "";
-      const item = normalizeResult({
+      const thumbMatch = chunk.match(thumbRe);
+      const yearMatch = chunk.match(yearRe);
+      const thumbUrl = thumbMatch ? thumbMatch[1] : "";
+
+      results.push(normalizeResult({
         _src: "discogs",
-        artistName: artist,
-        collectionName: title,
-        releaseDate: year,
-        artworkUrl60: "",
-        artworkUrl100: "",
-        _mbid: mbid
-      });
-      return item;
-    });
+        title: title,
+        year: yearMatch ? yearMatch[1] : "",
+        thumb: thumbUrl,
+        cover_image: thumbUrl,
+        _releaseId: id
+      }));
+    }
+    return results;
   } catch { return []; }
 }
 
@@ -784,113 +838,99 @@ async function fetchMusicBrainz(q,limit){
   }catch{return[]}
 }
 
-// Apple Music search — uses the iTunes Search API with targeted attribute queries
-// (artistTerm and albumTerm) which surface complementary results to the generic term
-// search and are the most direct path into the Apple Music catalog. Results are tagged
-// _src:"applemusic" so the UI can label them accordingly and link to music.apple.com.
-async function fetchAppleMusic(q,limit){
-  try{
-    const results=[];
-    const seen=new Set();
+// Pulls from all three sources in parallel, merges, and de-dupes by normalized
+// artist+title so the same album found on multiple services only shows up once.
+// iTunes results are kept first since they reliably include artwork; Discogs and
+// MusicBrainz fill in whatever iTunes' catalog is missing.
+// `limit` here is a per-source fetch cap (how many each API is asked for), NOT a
+// cap on the final merged list — artists with deep discographies should see every
+// match the sources return, with the dropdown/list scrolling instead of truncating.
+// ── SEARCH RELEVANCE SCORING ──
+// Every merged result gets a point score against the typed query, so a true
+// match (e.g. Metallica "Master of Puppets") always rises above loosely-related
+// noise that merely shares a word with the search — instead of the previous
+// behavior of just keeping whatever order iTunes/Discogs/MusicBrainz returned.
+function scoreSearchResult(item,qRaw){
+  const q=normalizeStr(qRaw);
+  const title=normalizeStr(item.collectionName||"");
+  if(!q||!title)return 0;
+  const artist=normalizeStr(item.artistName||"");
+  const combinedAT=normalizeStr(`${item.artistName||""} ${item.collectionName||""}`);
+  const combinedTA=normalizeStr(`${item.collectionName||""} ${item.artistName||""}`);
+  const qTokens=q.split(" ").filter(Boolean);
 
-    // artistTerm search — finds albums by this artist reliably when q is a name
-    const r1=await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=album&attribute=artistTerm&limit=${limit}&media=music`
-    );
-    if(r1.ok){
-      const d1=await r1.json();
-      (d1.results||[]).forEach(it=>{
-        const norm=normalizeResult({...it,_src:"applemusic"});
-        const k=normalizeStr(norm.artistName)+"|"+normalizeStr(norm.collectionName);
-        if(!seen.has(k)&&norm.collectionName){seen.add(k);results.push(norm);}
-      });
-    }
+  let score=0;
 
-    // albumTerm search — finds albums by exact title when q is an album name
-    try{
-        const r2=await fetch(
-          `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=album&attribute=albumTerm&limit=${limit}&media=music`
-        );
-        if(r2.ok){
-          const d2=await r2.json();
-          (d2.results||[]).forEach(it=>{
-            const norm=normalizeResult({...it,_src:"applemusic"});
-            const k=normalizeStr(norm.artistName)+"|"+normalizeStr(norm.collectionName);
-            if(!seen.has(k)&&norm.collectionName){seen.add(k);results.push(norm);}
-          });
-        }
-      }catch{}
+  // ── Exact / near-exact matches (top tier — these are what should win) ──
+  if(title===q)score+=1000;                          // query exactly matches the album title
+  if(combinedAT===q||combinedTA===q)score+=950;       // "artist title" or "title artist" typed exactly
+  if(artist===q)score+=700;                            // query exactly matches just the artist
 
-    return results;
-  }catch{return[]}
-}
+  // ── Strong partial matches ──
+  if(title.startsWith(q))score+=400;
+  else if(title.includes(q))score+=250;
+  if(artist.startsWith(q))score+=180;
+  else if(artist.includes(q))score+=100;
 
-// Score a result by how closely it matches the raw query string.
-// Higher score = better match. Source is irrelevant to scoring.
-function scoreResult(item, q){
-  const nq  = normalizeStr(q);
-  const na  = normalizeStr(item.artistName      || "");
-  const nt  = normalizeStr(item.collectionName  || "");
-  const nac = na + " " + nt;   // combined "artist album" string
-  let score = 0;
+  // ── Token coverage: reward results where every word the user typed actually
+  // shows up somewhere in the artist/title, and heavily penalize ones missing
+  // a distinctive word — this is what keeps unrelated same-genre albums from
+  // flooding out the real match ──
+  let hits=0;
+  qTokens.forEach(tok=>{ if(tok.length>=2&&(title.includes(tok)||artist.includes(tok)))hits++; });
+  const coverage=qTokens.length?hits/qTokens.length:0;
+  score+=coverage*150;
+  const allTokensPresent=qTokens.every(tok=>tok.length<2||title.includes(tok)||artist.includes(tok));
+  if(!allTokensPresent)score*=0.05;
 
-  // ── Exact full-field matches (best possible) ──
-  if(na === nq) score += 200;
-  if(nt === nq) score += 200;
+  // ── Tighter length match wins over a long compilation title that merely
+  // contains the query somewhere inside it ──
+  if(title.includes(q))score+=(q.length/Math.max(title.length,1))*80;
 
-  // ── Starts-with matches ──
-  if(na.startsWith(nq)) score += 80;
-  if(nt.startsWith(nq)) score += 80;
-
-  // ── Contains the whole query somewhere ──
-  if(na.includes(nq))  score += 50;
-  if(nt.includes(nq))  score += 50;
-  if(nac.includes(nq)) score += 25;
-
-  // ── Word-level matching ──
-  // Each query word found in artist or title adds to the score;
-  // matching all words together gets a bonus.
-  const qWords = nq.split(" ").filter(w => w.length > 1);
-  if(qWords.length > 0){
-    const inArtist = qWords.filter(w => na.includes(w)).length;
-    const inTitle  = qWords.filter(w => nt.includes(w)).length;
-    score += inArtist * 15;
-    score += inTitle  * 15;
-    // Bonus: every query word accounted for across artist + title
-    const covered = qWords.filter(w => nac.includes(w)).length;
-    if(covered === qWords.length) score += 40;
-  }
-
-  // ── Small bonus for having artwork (better UX) ──
-  if(item.artworkUrl60 || item.artworkUrl100) score += 5;
+  // ── Small source-confidence nudge: iTunes ships reliable metadata+art, so on
+  // an otherwise-tied score it edges out a Discogs/MusicBrainz duplicate ──
+  if(item._src==="itunes")score+=20;
+  else if(item._src==="discogs")score+=10;
+  if(item.artworkUrl60||item.artworkUrl100)score+=8;
 
   return score;
 }
 
-// Pulls from all four sources in parallel, merges, de-dupes by normalised
-// artist+title, then ranks purely by relevance to the query — source order
-// has no effect on the final ranking.
 async function fetchAlbumSearch(q,limit=50){
-  const [appleMusicRes,itunesRes,discogsRes,mbRes]=await Promise.all([
-    fetchAppleMusic(q,limit),
+  const [itunesRes,discogsRes,mbRes]=await Promise.all([
     fetchItunes(q,limit),
     fetchDiscogs(q,limit),
     fetchMusicBrainz(q,limit)
   ]);
-  const seen=new Set();
-  const merged=[];
-  // Interleave all sources so de-dup doesn't systematically favour one source;
-  // artwork-rich sources (Apple Music / iTunes) still win ties at the de-dup
-  // stage since they appear first, but ranking is done by score afterwards.
-  [...appleMusicRes,...itunesRes,...discogsRes,...mbRes].forEach(item=>{
+
+  // Merge by normalized artist|title key. When the same album shows up from more
+  // than one source, keep whichever copy actually has usable artwork (instead of
+  // blindly keeping "whoever came first"), and borrow a Discogs release id onto
+  // the kept copy so cover-art fallback still works even if iTunes' copy won.
+  const sourceOrder={itunes:0,discogs:1,musicbrainz:2};
+  const byKey=new Map();
+  [...itunesRes,...discogsRes,...mbRes].forEach(item=>{
+    if(!item.collectionName)return;
     const key=normalizeStr(item.artistName)+"|"+normalizeStr(item.collectionName);
-    if(seen.has(key)||!item.collectionName)return;
-    seen.add(key);
-    merged.push(item);
+    const existing=byKey.get(key);
+    if(!existing){byKey.set(key,item);return}
+    const existingArt=!!(existing.artworkUrl60||existing.artworkUrl100);
+    const incomingArt=!!(item.artworkUrl60||item.artworkUrl100);
+    if(!existing._releaseId&&item._releaseId)existing._releaseId=item._releaseId;
+    if((!existingArt&&incomingArt)||(existingArt===incomingArt&&sourceOrder[item._src]<sourceOrder[existing._src])){
+      if(!item._releaseId&&existing._releaseId)item._releaseId=existing._releaseId;
+      byKey.set(key,item);
+    }
   });
-  // Sort by relevance — highest score first, source is irrelevant
-  merged.sort((a,b)=>scoreResult(b,q)-scoreResult(a,q));
-  return merged;
+
+  // Score against the query and rank — anything scoring 0 (no real relevance
+  // to what was typed) is dropped rather than padding out the result list.
+  const scored=[...byKey.values()]
+    .map(item=>({item,score:scoreSearchResult(item,q)}))
+    .filter(s=>s.score>0);
+  scored.sort((a,b)=>b.score-a.score||(a.item.collectionName||"").localeCompare(b.item.collectionName||""));
+
+  return scored.map(s=>s.item); // no artificial cap — let the scrollable container handle long lists
 }
 
 // ── COVER ART (iTunes) ──
@@ -2395,62 +2435,8 @@ document.getElementById("addClose").addEventListener("click",()=>{document.getEl
 document.getElementById("addModal").addEventListener("click",e=>{if(e.target===document.getElementById("addModal"))document.getElementById("addModal").classList.remove("open")});
 document.getElementById("addSearchInput").addEventListener("keydown",e=>{if(e.key==="Enter")searchAlbums()});
 
-// ── DROPDOWN COVER ART FOR DISCOGS RESULTS ──
-// MusicBrainz/Discogs results have no directly loadable art URL.
-// We resolve covers via Cover Art Archive (MBID → CAA, fully CORS-open)
-// with iTunes as fallback for albums not in CAA.
-async function resolveDropdownArt(imgEl, artist, title, mbid) {
-  if (!artist || !title) return;
-  const ck = (artist + "|" + title).toLowerCase();
-  // 1. Already in cache?
-  if (caaCache[ck]) { if (document.contains(imgEl)) imgEl.src = caaCache[ck]; return; }
-  // 2. Cover Art Archive via MBID (fastest, highest quality)
-  if (mbid) {
-    try {
-      const r = await fetch(`https://coverartarchive.org/release/${mbid}/front-250`, { redirect: "follow" });
-      if (r.ok && r.url) {
-        caaCache[ck] = r.url; saveCaaCache();
-        if (document.contains(imgEl)) imgEl.src = r.url;
-        return;
-      }
-    } catch {}
-  }
-  // 3. iTunes fallback
-  try {
-    const q = encodeURIComponent(artist + " " + title);
-    const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=album&limit=10`);
-    if (!r.ok) return;
-    const d = await r.json();
-    const normT = normCover(title), normA = normCover(artist);
-    let best = null;
-    for (const res of (d.results || [])) {
-      const rT = normCover(res.collectionName || "");
-      const rA = normCover(res.artistName || "");
-      const artistMatch = rA === normA || (normA.length > 2 && (rA.includes(normA) || normA.includes(rA)));
-      const titleMatch  = rT === normT  || (normT.length > 2 && (rT.includes(normT)  || normT.includes(rT)));
-      if (artistMatch && titleMatch) { best = res; break; }
-      if (artistMatch && !best) best = res;
-    }
-    if (best) {
-      const url = (best.artworkUrl100 || best.artworkUrl60 || "").replace("100x100bb", "600x600bb");
-      if (url) { caaCache[ck] = url; saveCaaCache(); if (document.contains(imgEl)) imgEl.src = url; }
-    }
-  } catch {}
-}
-
-function resolveDropdownArtsIn(container, results) {
-  container.querySelectorAll("img[data-src-idx]").forEach(img => {
-    const item = results[+img.dataset.srcIdx];
-    if (!item) return;
-    // Only needed for Discogs — other sources already have working art URLs
-    if (item._src !== "discogs") return;
-    resolveDropdownArt(img, item.artistName || "", item.collectionName || "", item._mbid || "");
-  });
-}
-
 // ── AUTOCOMPLETE ENGINE ──
 function closeAutocomplete(dropId){const d=document.getElementById(dropId);if(d)d.classList.remove("open")}
-
 
 function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
   if(!results||!results.length){dropEl.classList.remove("open");return}
@@ -2458,12 +2444,21 @@ function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${item._src!=='discogs'?item.artworkUrl60||'':''}" data-src-idx="${i}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">\
+<img class="ac-thumb" src="${item.artworkUrl60||item.artworkUrl100||''}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
   dropEl.classList.add("open");
-  resolveDropdownArtsIn(dropEl, results);
+  // Discogs items already carry a direct i.discogs.com thumb scraped from the
+  // search results, so that's used immediately above. Only fall back to the
+  // slower page-scrape-through-proxy lookup if that direct thumb is missing or
+  // fails to load (e.g. transient CDN hiccup) — not as the default path.
+  dropEl.querySelectorAll("img[data-ridx]").forEach(img=>{
+    const item=results[+img.dataset.ridx];
+    if(!item||item._src!=="discogs"||!item._releaseId)return;
+    if(!img.getAttribute("src")){resolveDiscogsThumb(img,item._releaseId);return}
+    img.addEventListener("error",()=>resolveDiscogsThumb(img,item._releaseId),{once:true});
+  });
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
   });
@@ -2478,7 +2473,7 @@ const addDebounce=debounce(async(q)=>{
   const drop=document.getElementById("addAutoDropdown");
   drop.innerHTML=`<div class="ac-spinner">Searching…</div>`;drop.classList.add("open");
   try{
-    const results=await fetchAlbumSearch(q,8);
+    const results=await fetchAlbumSearch(q,50);
     buildAcDropdown(drop,results,(item)=>{
       addAlbumFromSearch(item,albumExistsInCrate(item.artistName||"",item.collectionName||""));
       closeAutocomplete("addAutoDropdown");
@@ -2505,9 +2500,10 @@ async function searchAlbums(){
     btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
     if(!results.length){list.innerHTML=`<p style="font-size:12px;color:var(--cream-dim);padding:8px 0;">No results found. Try a different search or add manually below.</p>`;return}
 
-    list.innerHTML=results.map((item,i)=>{
+    const countHeader=`<div style="font-size:11px;color:var(--cream-dim);padding:0 2px 4px;letter-spacing:.04em">${results.length} result${results.length!==1?'s':''}${results.length>10?' — scroll for more':''}</div>`;
+    list.innerHTML=countHeader+results.map((item,i)=>{
       const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
-      const srcTag=item._src==="discogs"?`<span class="search-result-src" title="Source: Discogs">Discogs</span>`:item._src==="musicbrainz"?`<span class="search-result-src" title="Source: MusicBrainz">MusicBrainz</span>`:item._src==="applemusic"?`<span class="search-result-src" style="color:#fa325f;border-color:rgba(250,50,95,.35);background:rgba(250,50,95,.08)" title="Source: Apple Music">♫ Apple Music</span>`:`<span class="search-result-src" title="Source: iTunes">iTunes</span>`;
+      const srcTag=item._src==="discogs"?`<span class="search-result-src" title="Source: Discogs">Discogs</span>`:item._src==="musicbrainz"?`<span class="search-result-src" title="Source: MusicBrainz">MusicBrainz</span>`:`<span class="search-result-src" title="Source: iTunes">iTunes</span>`;
       const btnHtml=isDup
         ?`<div class="search-result-dup-wrap">
             <span class="search-result-in-crate">✓ In Crate</span>
@@ -2515,7 +2511,7 @@ async function searchAlbums(){
           </div>`
         :`<button class="search-result-add" data-idx="${i}">Add</button>`;
       return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${item._src!=='discogs'?item.artworkUrl60||'':''}" data-src-idx="${i}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=GENRE_IMAGES['default'];">
+        <img class="search-result-thumb" src="${item.artworkUrl60||item.artworkUrl100||''}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">
         <div class="search-result-info">
           <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
           <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
@@ -2524,7 +2520,15 @@ async function searchAlbums(){
       </div>`;
     }).join("");
 
-    resolveDropdownArtsIn(list, results);
+    // Discogs items already carry a direct i.discogs.com thumb scraped from the
+    // search results, used immediately above. Only fall back to the slower
+    // page-scrape-through-proxy lookup if that thumb is missing or fails to load.
+    list.querySelectorAll("img[data-ridx]").forEach(img=>{
+      const item=results[+img.dataset.ridx];
+      if(!item||item._src!=="discogs"||!item._releaseId)return;
+      if(!img.getAttribute("src")){resolveDiscogsThumb(img,item._releaseId);return}
+      img.addEventListener("error",()=>resolveDiscogsThumb(img,item._releaseId),{once:true});
+    });
     list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
       btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
     });
@@ -2579,7 +2583,7 @@ const wantDebounce=debounce(async(q)=>{
   const drop=document.getElementById("wantAutoDropdown");
   drop.innerHTML=`<div class="ac-spinner">Searching…</div>`;drop.classList.add("open");
   try{
-    const results=await fetchAlbumSearch(q,8);
+    const results=await fetchAlbumSearch(q,50);
     buildAcDropdown(drop,results,(item)=>{
       _wantSelectedItem=item;
       document.getElementById("wantSearchInput").value=`${item.collectionName||""} — ${item.artistName||""}`;
@@ -2645,7 +2649,7 @@ function renderWantList(){
   if(!wantList.length){list.innerHTML=`<div class="wantlist-empty">🎯 Your wish list is empty.<br>Add albums you're hunting for.</div>`;return}
   list.innerHTML=wantList.map(item=>`
     <div class="want-item" data-id="${item.id}" tabindex="0" role="button" aria-label="${escAttr(item.artist)} — ${escAttr(item.title)}">
-      <img class="want-item-art" src="${escAttr(item.artUrl||getPlaceholder(item.genre||'default'))}" alt="" referrerpolicy="no-referrer">
+      <img class="want-item-art" src="${escAttr(item.artUrl||getPlaceholder(item.genre||'default'))}" alt="">
       <div class="want-item-info">
         <div class="want-item-title">${escAttr(item.title)}</div>
         <div class="want-item-artist">${escAttr(item.artist)}</div>
