@@ -2444,20 +2444,22 @@ function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${item.artworkUrl60||item.artworkUrl100||''}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">\
+<img class="ac-thumb" src="${escAttr(caaCache[(item.artistName||'').toLowerCase()+'|'+(item.collectionName||'').toLowerCase()]||(item._src!=="discogs"?(item.artworkUrl60||item.artworkUrl100||''):''))}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
   dropEl.classList.add("open");
-  // Discogs items already carry a direct i.discogs.com thumb scraped from the
-  // search results, so that's used immediately above. Only fall back to the
-  // slower page-scrape-through-proxy lookup if that direct thumb is missing or
-  // fails to load (e.g. transient CDN hiccup) — not as the default path.
+  // Resolve cover art the SAME way the crate grid does it: an iTunes lookup by
+  // artist+title via buildSearchStrategies/fetchAndApplyCover. Discogs' own CDN
+  // thumbnails get hotlink-blocked in this context, so Discogs-sourced items
+  // skip straight to the iTunes lookup rather than trying to show that thumb.
   dropEl.querySelectorAll("img[data-ridx]").forEach(img=>{
     const item=results[+img.dataset.ridx];
-    if(!item||item._src!=="discogs"||!item._releaseId)return;
-    if(!img.getAttribute("src")){resolveDiscogsThumb(img,item._releaseId);return}
-    img.addEventListener("error",()=>resolveDiscogsThumb(img,item._releaseId),{once:true});
+    if(!item)return;
+    const ck=(item.artistName||"").toLowerCase()+"|"+(item.collectionName||"").toLowerCase();
+    if(caaCache[ck]){img.src=caaCache[ck];return}
+    if(item._src!=="discogs"&&(item.artworkUrl60||item.artworkUrl100))return; // iTunes already gave real art
+    fetchAndApplyCover({img,artist:item.artistName||"",title:item.collectionName||"",year:item.releaseDate?parseInt(item.releaseDate):0});
   });
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
@@ -2511,7 +2513,7 @@ async function searchAlbums(){
           </div>`
         :`<button class="search-result-add" data-idx="${i}">Add</button>`;
       return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${item.artworkUrl60||item.artworkUrl100||''}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">
+        <img class="search-result-thumb" src="${escAttr(caaCache[(item.artistName||'').toLowerCase()+'|'+(item.collectionName||'').toLowerCase()]||(item._src!=="discogs"?(item.artworkUrl60||item.artworkUrl100||''):''))}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">
         <div class="search-result-info">
           <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
           <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
@@ -2520,14 +2522,16 @@ async function searchAlbums(){
       </div>`;
     }).join("");
 
-    // Discogs items already carry a direct i.discogs.com thumb scraped from the
-    // search results, used immediately above. Only fall back to the slower
-    // page-scrape-through-proxy lookup if that thumb is missing or fails to load.
+    // Resolve cover art the SAME way the crate grid does it: an iTunes lookup by
+    // artist+title via buildSearchStrategies/fetchAndApplyCover, instead of
+    // trying to hotlink Discogs' own (often blocked) CDN thumbnail.
     list.querySelectorAll("img[data-ridx]").forEach(img=>{
       const item=results[+img.dataset.ridx];
-      if(!item||item._src!=="discogs"||!item._releaseId)return;
-      if(!img.getAttribute("src")){resolveDiscogsThumb(img,item._releaseId);return}
-      img.addEventListener("error",()=>resolveDiscogsThumb(img,item._releaseId),{once:true});
+      if(!item)return;
+      const ck=(item.artistName||"").toLowerCase()+"|"+(item.collectionName||"").toLowerCase();
+      if(caaCache[ck]){img.src=caaCache[ck];return}
+      if(item._src!=="discogs"&&(item.artworkUrl60||item.artworkUrl100))return;
+      fetchAndApplyCover({img,artist:item.artistName||"",title:item.collectionName||"",year:item.releaseDate?parseInt(item.releaseDate):0});
     });
     list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
       btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
