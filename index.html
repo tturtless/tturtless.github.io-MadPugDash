@@ -714,45 +714,10 @@ async function fetchItunes(q,limit){
   }catch{return[]}
 }
 
-// ── DISCOGS COVER ART LOADER ──
-// Fetches Discogs release page via allorigins.win proxy, scrapes the <img src>,
-// then fetches the image itself through the proxy and converts to a blob URL
-// so the browser can display it without hitting Discogs CDN cross-origin blocks.
-const _discogsBlobCache = new Map();
-
-async function fetchDiscogsImageAsBlob(imgUrl) {
-  if (!imgUrl) return null;
-  if (_discogsBlobCache.has(imgUrl)) return _discogsBlobCache.get(imgUrl);
-  try {
-    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(imgUrl)}`;
-    const r = await fetch(proxy);
-    if (!r.ok) return null;
-    const blob = await r.blob();
-    const objUrl = URL.createObjectURL(blob);
-    _discogsBlobCache.set(imgUrl, objUrl);
-    return objUrl;
-  } catch { return null; }
-}
-
-async function resolveDiscogsThumb(imgEl, releaseId) {
-  if (!releaseId || !document.contains(imgEl)) return;
-  try {
-    // Fetch the Discogs release page HTML through the proxy
-    const pageUrl = `https://www.discogs.com/release/${releaseId}`;
-    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(pageUrl)}`;
-    const r = await fetch(proxy);
-    if (!r.ok) return;
-    const html = await r.text();
-    // Parse out the first album cover img src from the page
-    const match = html.match(/<img[^>]+class="[^"]*image_[^"]*"[^>]+src="(https:\/\/i\.discogs\.com\/[^"]+)"/i)
-                || html.match(/src="(https:\/\/i\.discogs\.com\/[^"]+\.(?:jpeg|jpg|png|gif))"/i);
-    if (!match) return;
-    const imgUrl = match[1];
-    const blobUrl = await fetchDiscogsImageAsBlob(imgUrl);
-    if (blobUrl && document.contains(imgEl)) imgEl.src = blobUrl;
-  } catch {}
-}
-
+// NOTE: cover art for Discogs/MusicBrainz search hits no longer goes through a
+// release-page scrape — see resolveCoverForItem() further below, which probes
+// the thumbnail Discogs already gave us and falls back to the same iTunes
+// lookup that powers the crate grid's cover art.
 async function fetchDiscogs(q, limit) {
   try {
     // Fetch the Discogs search page through the proxy
@@ -1075,6 +1040,99 @@ async function fetchAndApplyCover({img,artist,title,year}){
 function scheduleAutoRetry(){
   clearTimeout(retryTimer);
   retryTimer=setTimeout(()=>{retryCount++;for(const[,t]of failedLookups)if(document.contains(t.img))coverQueue.push(t);failedLookups.clear();if(coverQueue.length>0)drainCoverQueue();},5000+retryCount*3000);
+}
+
+// ── SEARCH-RESULT COVER RESOLUTION (complete rework) ──
+// Earlier versions tried to patch <img> elements in place *after* the dropdown/
+// list HTML was already rendered (querySelectorAll + async callbacks racing
+// against the next keystroke's re-render). That's what produced the persistent
+// solid-black thumbnails: a stale or never-applied src on detached/replaced
+// nodes, with no visible fallback when a lookup failed silently.
+//
+// This rework resolves a real, *verified* image URL for every result BEFORE
+// any HTML is built, so the dropdown/list is rendered exactly once, already
+// containing a working <img src> (or a clearly-visible placeholder — never a
+// blank/black box with no explanation).
+
+// Tiny concurrency-limited map so 20+ results don't all hit the network at
+// once (which is what was silently rate-limiting/timing-out iTunes lookups).
+async function mapLimit(items,limit,fn){
+  const ret=new Array(items.length);
+  let idx=0;
+  async function worker(){
+    while(idx<items.length){
+      const i=idx++;
+      try{ret[i]=await fn(items[i],i);}catch{ret[i]=null;}
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(limit,items.length)||1},worker));
+  return ret;
+}
+
+// Tests whether an image URL actually loads in THIS browser before trusting
+// it — Discogs' own thumbnail CDN is hit-or-miss for hotlinking depending on
+// network/extensions/region, so rather than guessing, we just check.
+function probeImage(url,timeoutMs=2500){
+  return new Promise(resolve=>{
+    if(!url){resolve(false);return}
+    const im=new Image();
+    const done=ok=>{im.onload=im.onerror=null;resolve(ok)};
+    const t=setTimeout(()=>done(false),timeoutMs);
+    im.onload=()=>{clearTimeout(t);done(true)};
+    im.onerror=()=>{clearTimeout(t);done(false)};
+    im.referrerPolicy="no-referrer";
+    im.src=url;
+  });
+}
+
+// Resolves one final, working artwork URL for a search result:
+//  1. cache hit — instant, zero network
+//  2. iTunes already gave us real artwork directly — trust it, no extra call
+//  3. Discogs/MusicBrainz gave us a thumbnail — verify it actually loads first
+//  4. fall back to the exact same iTunes lookup that resolves cover art in the
+//     crate grid (buildSearchStrategies + artist/title match)
+// Returns "" only if every option above genuinely failed; callers substitute
+// the standard genre placeholder in that case so nothing ever renders blank.
+async function resolveCoverForItem(item){
+  const ck=(item.artistName||"").toLowerCase()+"|"+(item.collectionName||"").toLowerCase();
+  if(caaCache[ck])return caaCache[ck];
+
+  if(item._src==="itunes"&&(item.artworkUrl100||item.artworkUrl60)){
+    const url=(item.artworkUrl100||item.artworkUrl60).replace("100x100bb","400x400bb");
+    caaCache[ck]=url;saveCaaCache();
+    return url;
+  }
+
+  if(item.artworkUrl60||item.artworkUrl100){
+    const thumb=item.artworkUrl60||item.artworkUrl100;
+    if(await probeImage(thumb)){caaCache[ck]=thumb;saveCaaCache();return thumb}
+  }
+
+  for(const q of buildSearchStrategies(item.artistName||"",item.collectionName||"")){
+    try{
+      const r=await fetch(`https://itunes.apple.com/search?term=${q}&entity=album&limit=15`);
+      if(!r.ok)continue;
+      const d=await r.json();
+      if(!d.results||!d.results.length)continue;
+      const normT=normCover(item.collectionName||""),normA=normCover(item.artistName||"");
+      const artistVariants=[normA,...(COVER_ARTIST_ALIASES[normA]||[])];
+      let bestFull=null,bestArtistOnly=null;
+      for(const res of d.results){
+        const rT=normCover(res.collectionName||""),rA=normCover(res.artistName||"");
+        const artistMatch=artistVariants.some(a=>rA===a||(a.length>2&&(rA.includes(a)||a.includes(rA))));
+        const titleMatch=rT===normT||(normT.length>2&&(rT.includes(normT)||normT.includes(rT)));
+        if(!artistMatch)continue;
+        if(titleMatch&&!bestFull)bestFull=res;
+        if(!bestArtistOnly)bestArtistOnly=res;
+      }
+      const best=bestFull||bestArtistOnly;
+      if(best){
+        const url=(best.artworkUrl100||best.artworkUrl60||"").replace("100x100bb","400x400bb");
+        if(url){caaCache[ck]=url;saveCaaCache();return url}
+      }
+    }catch{}
+  }
+  return "";
 }
 
 function refreshAllCovers(){
@@ -2438,29 +2496,23 @@ document.getElementById("addSearchInput").addEventListener("keydown",e=>{if(e.ke
 // ── AUTOCOMPLETE ENGINE ──
 function closeAutocomplete(dropId){const d=document.getElementById(dropId);if(d)d.classList.remove("open")}
 
-function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
+// Pure render: takes results that ALREADY carry a resolved `_resolvedArt` (set
+// by resolveCoverForItem upstream) and builds the dropdown HTML exactly once.
+// No async work happens in here and nothing gets patched after the fact, so
+// there's no race with the next keystroke's re-render.
+function renderAcDropdown(dropEl,results,onSelect,mode="crate"){
   if(!results||!results.length){dropEl.classList.remove("open");return}
   dropEl.innerHTML=results.map((item,i)=>{
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
+    const art=item._resolvedArt||getPlaceholder("default");
+    const fallback=getPlaceholder("default");
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${escAttr(caaCache[(item.artistName||'').toLowerCase()+'|'+(item.collectionName||'').toLowerCase()]||(item._src!=="discogs"?(item.artworkUrl60||item.artworkUrl100||''):''))}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">\
+<img class="ac-thumb" src="${escAttr(art)}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${fallback}'">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
   dropEl.classList.add("open");
-  // Resolve cover art the SAME way the crate grid does it: an iTunes lookup by
-  // artist+title via buildSearchStrategies/fetchAndApplyCover. Discogs' own CDN
-  // thumbnails get hotlink-blocked in this context, so Discogs-sourced items
-  // skip straight to the iTunes lookup rather than trying to show that thumb.
-  dropEl.querySelectorAll("img[data-ridx]").forEach(img=>{
-    const item=results[+img.dataset.ridx];
-    if(!item)return;
-    const ck=(item.artistName||"").toLowerCase()+"|"+(item.collectionName||"").toLowerCase();
-    if(caaCache[ck]){img.src=caaCache[ck];return}
-    if(item._src!=="discogs"&&(item.artworkUrl60||item.artworkUrl100))return; // iTunes already gave real art
-    fetchAndApplyCover({img,artist:item.artistName||"",title:item.collectionName||"",year:item.releaseDate?parseInt(item.releaseDate):0});
-  });
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
   });
@@ -2470,18 +2522,28 @@ ${badge}</div>`;
 function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}}
 
 // ── LIVE SEARCH FOR ADD MODAL ──
+// A request sequence number guards against an older, slower search (one whose
+// cover-art resolution is still in flight) overwriting a newer one once it
+// finally finishes — the actual cause of "nothing ever updates" symptoms.
+let addSearchSeq=0;
 const addDebounce=debounce(async(q)=>{
-  if(q.length<2){closeAutocomplete("addAutoDropdown");return}
+  const mySeq=++addSearchSeq;
   const drop=document.getElementById("addAutoDropdown");
+  if(q.length<2){closeAutocomplete("addAutoDropdown");return}
   drop.innerHTML=`<div class="ac-spinner">Searching…</div>`;drop.classList.add("open");
-  try{
-    const results=await fetchAlbumSearch(q,50);
-    buildAcDropdown(drop,results,(item)=>{
-      addAlbumFromSearch(item,albumExistsInCrate(item.artistName||"",item.collectionName||""));
-      closeAutocomplete("addAutoDropdown");
-      document.getElementById("addSearchInput").value="";
-    },"crate");
-  }catch{drop.classList.remove("open")}
+  let results=[];
+  try{ results=await fetchAlbumSearch(q,50); }
+  catch{ if(mySeq===addSearchSeq)drop.classList.remove("open"); return; }
+  if(mySeq!==addSearchSeq)return; // superseded by a newer keystroke
+  if(!results.length){drop.classList.remove("open");return}
+  const arts=await mapLimit(results,4,r=>resolveCoverForItem(r));
+  if(mySeq!==addSearchSeq)return; // superseded while covers were resolving
+  results.forEach((r,i)=>{r._resolvedArt=arts[i]});
+  renderAcDropdown(drop,results,(item)=>{
+    addAlbumFromSearch(item,albumExistsInCrate(item.artistName||"",item.collectionName||""));
+    closeAutocomplete("addAutoDropdown");
+    document.getElementById("addSearchInput").value="";
+  },"crate");
 },380);
 
 document.getElementById("addSearchInput").addEventListener("input",e=>addDebounce(e.target.value.trim()));
@@ -2493,58 +2555,60 @@ function albumExistsInCrate(artist,title){
   return vinylCollection.some(a=>normalizeStr(a.artist)===na&&normalizeStr(a.title)===nt);
 }
 
+let addListSeq=0;
 async function searchAlbums(){
   const q=document.getElementById("addSearchInput").value.trim();if(!q)return;
+  const mySeq=++addListSeq;
   const btn=document.getElementById("addSearchBtn"),list=document.getElementById("searchResultsList");
   btn.disabled=true;btn.textContent="Searching";btn.classList.add("loading-dots");list.innerHTML="";
-  try{
-    const results=await fetchAlbumSearch(q,50);
-    btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
-    if(!results.length){list.innerHTML=`<p style="font-size:12px;color:var(--cream-dim);padding:8px 0;">No results found. Try a different search or add manually below.</p>`;return}
-
-    const countHeader=`<div style="font-size:11px;color:var(--cream-dim);padding:0 2px 4px;letter-spacing:.04em">${results.length} result${results.length!==1?'s':''}${results.length>10?' — scroll for more':''}</div>`;
-    list.innerHTML=countHeader+results.map((item,i)=>{
-      const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
-      const srcTag=item._src==="discogs"?`<span class="search-result-src" title="Source: Discogs">Discogs</span>`:item._src==="musicbrainz"?`<span class="search-result-src" title="Source: MusicBrainz">MusicBrainz</span>`:`<span class="search-result-src" title="Source: iTunes">iTunes</span>`;
-      const btnHtml=isDup
-        ?`<div class="search-result-dup-wrap">
-            <span class="search-result-in-crate">✓ In Crate</span>
-            <button class="search-result-dup" data-idx="${i}">+ Add Duplicate</button>
-          </div>`
-        :`<button class="search-result-add" data-idx="${i}">Add</button>`;
-      return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${escAttr(caaCache[(item.artistName||'').toLowerCase()+'|'+(item.collectionName||'').toLowerCase()]||(item._src!=="discogs"?(item.artworkUrl60||item.artworkUrl100||''):''))}" data-ridx="${i}" alt="" referrerpolicy="no-referrer">
-        <div class="search-result-info">
-          <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
-          <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
-        </div>
-        ${btnHtml}
-      </div>`;
-    }).join("");
-
-    // Resolve cover art the SAME way the crate grid does it: an iTunes lookup by
-    // artist+title via buildSearchStrategies/fetchAndApplyCover, instead of
-    // trying to hotlink Discogs' own (often blocked) CDN thumbnail.
-    list.querySelectorAll("img[data-ridx]").forEach(img=>{
-      const item=results[+img.dataset.ridx];
-      if(!item)return;
-      const ck=(item.artistName||"").toLowerCase()+"|"+(item.collectionName||"").toLowerCase();
-      if(caaCache[ck]){img.src=caaCache[ck];return}
-      if(item._src!=="discogs"&&(item.artworkUrl60||item.artworkUrl100))return;
-      fetchAndApplyCover({img,artist:item.artistName||"",title:item.collectionName||"",year:item.releaseDate?parseInt(item.releaseDate):0});
-    });
-    list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
-      btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
-    });
-  }catch{
+  let results=[];
+  try{ results=await fetchAlbumSearch(q,50); }
+  catch{
+    if(mySeq!==addListSeq)return;
     btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
     list.innerHTML=`<p style="font-size:12px;color:var(--cream-dim);padding:8px 0;">Search failed. Check your connection and try again.</p>`;
+    return;
   }
+  if(mySeq!==addListSeq)return;
+  btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
+  if(!results.length){list.innerHTML=`<p style="font-size:12px;color:var(--cream-dim);padding:8px 0;">No results found. Try a different search or add manually below.</p>`;return}
+
+  list.innerHTML=`<div class="ac-spinner">Loading cover art…</div>`;
+  const arts=await mapLimit(results,4,r=>resolveCoverForItem(r));
+  if(mySeq!==addListSeq)return;
+  results.forEach((r,i)=>{r._resolvedArt=arts[i]});
+
+  const countHeader=`<div style="font-size:11px;color:var(--cream-dim);padding:0 2px 4px;letter-spacing:.04em">${results.length} result${results.length!==1?'s':''}${results.length>10?' — scroll for more':''}</div>`;
+  list.innerHTML=countHeader+results.map((item,i)=>{
+    const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
+    const srcTag=item._src==="discogs"?`<span class="search-result-src" title="Source: Discogs">Discogs</span>`:item._src==="musicbrainz"?`<span class="search-result-src" title="Source: MusicBrainz">MusicBrainz</span>`:`<span class="search-result-src" title="Source: iTunes">iTunes</span>`;
+    const btnHtml=isDup
+      ?`<div class="search-result-dup-wrap">
+          <span class="search-result-in-crate">✓ In Crate</span>
+          <button class="search-result-dup" data-idx="${i}">+ Add Duplicate</button>
+        </div>`
+      :`<button class="search-result-add" data-idx="${i}">Add</button>`;
+    const art=item._resolvedArt||getPlaceholder("default");
+    const fallback=getPlaceholder("default");
+    return `<div class="search-result-row">
+      <img class="search-result-thumb" src="${escAttr(art)}" alt="" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${fallback}'">
+      <div class="search-result-info">
+        <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
+        <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
+      </div>
+      ${btnHtml}
+    </div>`;
+  }).join("");
+
+  list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
+    btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
+  });
 }
 
 function addAlbumFromSearch(item,isDuplicate=false){
   const year=item.releaseDate?parseInt(String(item.releaseDate).slice(0,4)):new Date().getFullYear();
-  const album={id:nextId++,artist:item.artistName||"Unknown Artist",title:item.collectionName||"Unknown Album",year,genre:"Classic Rock",condition:"VG+",decade:Math.floor(year/10)*10,_itunesArt:item.artworkUrl100?item.artworkUrl100.replace("100x100bb","400x400bb"):null};
+  const art=item._resolvedArt||item.artworkUrl100||item.artworkUrl60||null;
+  const album={id:nextId++,artist:item.artistName||"Unknown Artist",title:item.collectionName||"Unknown Album",year,genre:"Classic Rock",condition:"VG+",decade:Math.floor(year/10)*10,_itunesArt:art};
   vinylCollection.push(album);
   if(album._itunesArt){caaCache[(album.artist+"|"+album.title).toLowerCase()]=album._itunesArt;saveCaaCache()}
   const ua=lsGet("crate_user_albums",[]);ua.push(album);lsSet("crate_user_albums",ua);
@@ -2581,21 +2645,28 @@ document.getElementById("wantlistModal").addEventListener("click",e=>{if(e.targe
 document.getElementById("wantSearchInput").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();if(_wantSelectedItem)commitWantItem(_wantSelectedItem);else addWantManual();}});
 
 // ── LIVE SEARCH FOR WANTLIST ──
+let wantSearchSeq=0;
 const wantDebounce=debounce(async(q)=>{
   _wantSelectedItem=null;
-  if(q.length<2){closeAutocomplete("wantAutoDropdown");return;}
+  const mySeq=++wantSearchSeq;
   const drop=document.getElementById("wantAutoDropdown");
+  if(q.length<2){closeAutocomplete("wantAutoDropdown");return;}
   drop.innerHTML=`<div class="ac-spinner">Searching…</div>`;drop.classList.add("open");
-  try{
-    const results=await fetchAlbumSearch(q,50);
-    buildAcDropdown(drop,results,(item)=>{
-      _wantSelectedItem=item;
-      document.getElementById("wantSearchInput").value=`${item.collectionName||""} — ${item.artistName||""}`;
-      closeAutocomplete("wantAutoDropdown");
-      // Immediately commit
-      commitWantItem(item);
-    },"want");
-  }catch{drop.classList.remove("open");}
+  let results=[];
+  try{ results=await fetchAlbumSearch(q,50); }
+  catch{ if(mySeq===wantSearchSeq)drop.classList.remove("open"); return; }
+  if(mySeq!==wantSearchSeq)return;
+  if(!results.length){drop.classList.remove("open");return}
+  const arts=await mapLimit(results,4,r=>resolveCoverForItem(r));
+  if(mySeq!==wantSearchSeq)return;
+  results.forEach((r,i)=>{r._resolvedArt=arts[i]});
+  renderAcDropdown(drop,results,(item)=>{
+    _wantSelectedItem=item;
+    document.getElementById("wantSearchInput").value=`${item.collectionName||""} — ${item.artistName||""}`;
+    closeAutocomplete("wantAutoDropdown");
+    // Immediately commit
+    commitWantItem(item);
+  },"want");
 },380);
 
 document.getElementById("wantSearchInput").addEventListener("input",e=>{wantDebounce(e.target.value.trim());});
@@ -2608,7 +2679,9 @@ function commitWantItem(itunesItem){
     const g=(itunesItem._raw.genre&&itunesItem._raw.genre[0])||(itunesItem._raw.style&&itunesItem._raw.style[0])||"";
     genre=g;
   }
-  const item={id:Date.now(),artist:itunesItem.artistName||"Unknown Artist",title:itunesItem.collectionName||"Unknown Album",year,artUrl:itunesItem.artworkUrl100||itunesItem.artworkUrl60||"",genre,fav:false};
+  const artUrl=itunesItem._resolvedArt||itunesItem.artworkUrl100||itunesItem.artworkUrl60||"";
+  const item={id:Date.now(),artist:itunesItem.artistName||"Unknown Artist",title:itunesItem.collectionName||"Unknown Album",year,artUrl,genre,fav:false};
+  if(artUrl){caaCache[(item.artist+"|"+item.title).toLowerCase()]=artUrl;saveCaaCache();}
   wantList.push(item);saveWantList();renderWantList();
   document.getElementById("wantSearchInput").value="";
   _wantSelectedItem=null;
@@ -2619,8 +2692,15 @@ async function addWantManual(){
   const raw=document.getElementById("wantSearchInput").value.trim();
   if(!raw){showToast("Type an artist or album name first");return;}
   const item={id:Date.now(),artist:"Unknown Artist",title:raw,year:"",artUrl:"",genre:"",fav:false};
-  // Try to find cover art from iTunes/Discogs
-  try{const results=await fetchAlbumSearch(raw,1);if(results.length){const hit=results[0];item.artUrl=hit.artworkUrl100||"";if(!item.year&&hit.releaseDate)item.year=String(hit.releaseDate).slice(0,4);}}catch{}
+  // Try to find cover art from iTunes/Discogs, verified the same way as everywhere else
+  try{
+    const results=await fetchAlbumSearch(raw,1);
+    if(results.length){
+      const hit=results[0];
+      item.artUrl=await resolveCoverForItem(hit)||"";
+      if(!item.year&&hit.releaseDate)item.year=String(hit.releaseDate).slice(0,4);
+    }
+  }catch{}
   wantList.push(item);saveWantList();renderWantList();
   document.getElementById("wantSearchInput").value="";
   showToast(`✓ "${item.title}" added to wish list`);
