@@ -2386,14 +2386,44 @@ function buildAcDropdown(dropEl,results,onSelect,mode="crate"){
   dropEl.innerHTML=results.map((item,i)=>{
     const isDup=albumExistsInCrate(item.artistName||"",item.collectionName||"");
     const badge=isDup?`<span class="ac-action" style="color:var(--gold)">✓ in crate</span>`:`<span class="ac-action">＋ ${mode==="want"?"Wish":"Add"}</span>`;
+    const thumbSrc=item.artworkUrl60||item.artworkUrl100||"";
     return `<div class="ac-row" data-idx="${i}">\
-<img class="ac-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer">\
+<img class="ac-thumb" src="${thumbSrc}" alt="" referrerpolicy="no-referrer" data-artist="${escAttr(item.artistName||'')}" data-title="${escAttr(item.collectionName||'')}" data-src="${item._src||''}">\
 <div class="ac-info"><div class="ac-title">${escAttr(item.collectionName||'Unknown')}</div><div class="ac-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?item.releaseDate.slice(0,4):''}</div></div>\
 ${badge}</div>`;
   }).join("");
   dropEl.classList.add("open");
   dropEl.querySelectorAll(".ac-row").forEach(row=>{
     row.addEventListener("mousedown",e=>{e.preventDefault();onSelect(results[+row.dataset.idx])});
+  });
+  // For any thumbnail that fails to load (common with Discogs — auth-gated or empty),
+  // fall back to a fast iTunes artwork lookup so the dropdown never shows blank squares.
+  dropEl.querySelectorAll(".ac-thumb").forEach(img=>{
+    const tryItunes=()=>{
+      const artist=img.dataset.artist,title=img.dataset.title;
+      if(!artist&&!title)return;
+      const ck=(artist+"|"+title).toLowerCase();
+      if(caaCache[ck]){img.src=caaCache[ck];return;}
+      const q=encodeURIComponent((artist+" "+title).trim());
+      fetch("https://itunes.apple.com/search?term="+q+"&entity=album&limit=5")
+        .then(r=>r.ok?r.json():null)
+        .then(d=>{
+          if(!d||!d.results||!d.results.length)return;
+          const nt=normalizeStr(title);
+          const na=normalizeStr(artist);
+          let best=d.results.find(r=>normalizeStr(r.collectionName||"")===nt&&normalizeStr(r.artistName||"").includes(na.split(" ")[0]));
+          if(!best)best=d.results.find(r=>normalizeStr(r.collectionName||"").includes(nt.split(" ")[0]));
+          if(!best)best=d.results[0];
+          const url=(best.artworkUrl100||best.artworkUrl60||"").replace("100x100bb","200x200bb");
+          if(url){caaCache[ck]=url;saveCaaCache();if(img.isConnected&&(!img.naturalWidth||img.naturalWidth<2))img.src=url;}
+        }).catch(()=>{});
+    };
+    if(!img.src||img.src===window.location.href){
+      tryItunes();
+    } else {
+      img.addEventListener("error",tryItunes,{once:true});
+      img.addEventListener("load",()=>{if(img.naturalWidth<=1)tryItunes();},{once:true});
+    }
   });
 }
 
@@ -2443,7 +2473,7 @@ async function searchAlbums(){
           </div>`
         :`<button class="search-result-add" data-idx="${i}">Add</button>`;
       return `<div class="search-result-row">
-        <img class="search-result-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer">
+        <img class="search-result-thumb" src="${item.artworkUrl60||''}" alt="" referrerpolicy="no-referrer" data-artist="${escAttr(item.artistName||'')}" data-title="${escAttr(item.collectionName||'')}">
         <div class="search-result-info">
           <div class="search-result-title">${escAttr(item.collectionName||'Unknown')} ${srcTag}</div>
           <div class="search-result-meta">${escAttr(item.artistName||'')} · ${item.releaseDate?String(item.releaseDate).slice(0,4):''}</div>
@@ -2454,6 +2484,30 @@ async function searchAlbums(){
 
     list.querySelectorAll(".search-result-add,.search-result-dup").forEach(btn=>{
       btn.addEventListener("click",()=>{const item=results[+btn.dataset.idx];addAlbumFromSearch(item,btn.classList.contains("search-result-dup"))});
+    });
+    // iTunes art fallback for Discogs / MusicBrainz results with no thumbnail
+    list.querySelectorAll(".search-result-thumb").forEach(img=>{
+      const tryItunes=()=>{
+        const artist=img.dataset.artist,title=img.dataset.title;
+        if(!artist&&!title)return;
+        const ck=(artist+"|"+title).toLowerCase();
+        if(caaCache[ck]){img.src=caaCache[ck];return;}
+        const q=encodeURIComponent((artist+" "+title).trim());
+        fetch("https://itunes.apple.com/search?term="+q+"&entity=album&limit=5")
+          .then(r=>r.ok?r.json():null)
+          .then(d=>{
+            if(!d||!d.results||!d.results.length)return;
+            const nt=normalizeStr(title);
+            const na=normalizeStr(artist);
+            let best=d.results.find(r=>normalizeStr(r.collectionName||"")===nt&&normalizeStr(r.artistName||"").includes(na.split(" ")[0]));
+            if(!best)best=d.results.find(r=>normalizeStr(r.collectionName||"").includes(nt.split(" ")[0]));
+            if(!best)best=d.results[0];
+            const url=(best.artworkUrl100||best.artworkUrl60||"").replace("100x100bb","400x400bb");
+            if(url){caaCache[ck]=url;saveCaaCache();if(img.isConnected&&(!img.naturalWidth||img.naturalWidth<2))img.src=url;}
+          }).catch(()=>{});
+      };
+      if(!img.src||img.src===window.location.href){tryItunes();}
+      else{img.addEventListener("error",tryItunes,{once:true});img.addEventListener("load",()=>{if(img.naturalWidth<=1)tryItunes();},{once:true});}
     });
   }catch{
     btn.disabled=false;btn.textContent="Search";btn.classList.remove("loading-dots");
